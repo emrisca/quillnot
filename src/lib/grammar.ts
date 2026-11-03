@@ -10,6 +10,7 @@
  * being spliced into the wrong sentence.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isDesktop } from "./openrouter";
 
 export type IssueKind = "spelling" | "grammar" | "punctuation" | "style";
@@ -156,6 +157,27 @@ export type CheckResult = {
 };
 
 const KINDS: IssueKind[] = ["spelling", "grammar", "punctuation", "style"];
+
+/** Issues found so far while a check is still running. */
+export type CheckProgress = {
+  done: number;
+  total: number;
+  issues: Issue[];
+  model: string;
+};
+
+/** Matches `PROGRESS_EVENT` in `src-tauri/src/grammar.rs`. */
+export const PROGRESS_EVENT = "grammar:progress";
+
+/**
+ * The backend checks paragraph by paragraph and sends each block's issues as it lands,
+ * so a long document fills the pane instead of showing a spinner and then everything.
+ */
+export async function onCheckProgress(
+  handler: (progress: CheckProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<CheckProgress>(PROGRESS_EVENT, (event) => handler(event.payload));
+}
 
 /**
  * The real check: the model proposes, the Rust side verifies each quote against the

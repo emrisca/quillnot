@@ -2259,3 +2259,36 @@ button:disabled {
   align-items: center;
   gap: 10px;
 }
+
+/* The grammar pane underlines flagged words with a mirror behind a transparent textarea:
+   the same class, font and padding, so the marks land under the words they belong to. */
+.editorstack {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.editorstack__mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+  border: 0;
+  background: none;
+}
+
+.editorstack__mirror mark {
+  color: transparent;
+  background: transparent;
+  border-bottom: 2px solid var(--green);
+}
+
+.editorstack__input {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  background: transparent;
+}

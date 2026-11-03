@@ -9,8 +9,9 @@ Built with Tauri v2, React 19 and Vite.
 ## Status
 
 Rewrites stream from the free model you pick, the grammar checker offers a fix only for a quote
-it found in your text, every run is kept in a local JSON log that History and Statistics read,
-and the app checks its own release feed for updates. Translate is the newest tool: the same
+it found in your text and checks paragraph by paragraph so cards arrive while the rest of the
+document is still being read, every run is kept in a local JSON log that History and Statistics
+read, and the app checks its own release feed for updates. Translate is the newest tool: the same
 streaming request with a target language and a register where the mode would be, so it needs no
 account of its own and no second provider.
 

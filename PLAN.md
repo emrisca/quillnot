@@ -8,11 +8,12 @@ has, and their calls are billed to their own credits.
 Status: **M8 shipped, with the gaps each milestone names.** The shell, both tools against
 live free models, the verified grammar checker, local history and statistics, the provider
 list, the updater, the polish pass, the catalogue's per-call ranking and Typer all exist.
-What is missing is in three places. Typer has no Windows or X11 injector and no generated
-"finish by" mode. The score has no quality term, because a sample records only whether a
-call worked and how long it took. Rate-limit handling is one fixed retry, not a backoff.
-What is unproven is proof rather than code: Typer has never posted a keystroke on a desktop
-with Accessibility granted, and no update has installed over a previous version.
+What is missing is in three places. Typer has no X11 injector and no generated "finish by"
+mode; macOS and Windows both type. The score has no quality term, because a sample records
+only whether a call worked and how long it took. The catalogue caches its table but sends
+no conditional request and is not fetched at launch. What is unproven is proof rather than
+code: Typer has never posted a keystroke on a desktop with Accessibility granted, and no
+update has installed over a previous version.
 
 Two features carry it past being a QuillBot skin. A **scored catalogue of every free
 endpoint** OpenRouter exposes (§3), so the app calls the model that is fast and up *now*
@@ -268,8 +269,9 @@ once. A quote that is not in the text is dropped — an invented quote is not ev
 mistake — and one that appears twice is shown without a position. Parsing survives a fenced
 block, a bare array, a preamble sentence and a reply cut off mid-object. The view is wired to
 it: real issues, accept, ignore, accept-all (which skips anything unplaceable), the model that
-answered and how many triples were refused. What remains is the underline rendering of the
-flagged spans inside the input pane.
+answered and how many triples were refused. The flagged spans are underlined in the input
+pane by a mirror behind the textarea, and the check runs paragraph by paragraph, so cards
+arrive while the rest of the document is still being read instead of after the last token.
 
 **Done when:** a paragraph with planted spelling, punctuation and agreement errors yields
 issues whose quotes are found in the text, and accepting all of them produces clean prose.

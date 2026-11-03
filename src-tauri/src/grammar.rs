@@ -15,7 +15,7 @@
 //! fenced block, a bare array, or a reply that runs out of tokens mid-object.
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::{openrouter, prompt, providers, samples};
 
@@ -44,6 +44,35 @@ pub struct GrammarResult {
     pub dropped: usize,
     /// How many issues were found but cannot be placed.
     pub unlocated: usize,
+}
+
+/// Issues found so far, sent once per block so the pane fills as the check runs rather
+/// than after the last one. A five-block check used to show nothing for half a minute.
+pub const PROGRESS_EVENT: &str = "grammar:progress";
+
+/// A block big enough to hold a paragraph or three, small enough that a free model
+/// answers it in a couple of seconds.
+const BLOCK_CHARS: usize = 1200;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Progress {
+    done: usize,
+    total: usize,
+    issues: Vec<Issue>,
+    model: String,
+}
+
+impl Issue {
+    /// Block-relative offsets become document offsets once the block it came from is
+    /// known. Only placed issues move: an unplaced one has no position to shift.
+    fn shifted(mut self, base: usize) -> Self {
+        if self.unique {
+            self.start += base;
+            self.end += base;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -112,17 +141,123 @@ async fn run(
         return Err("There is nothing to check.".to_string());
     }
 
-    let (system, user) = prompt::grammar_prompt(text);
-    let (model, raw) = openrouter::complete(app, samples::GRAMMAR, attempts, &system, &user).await?;
-    let parsed = parse_issues(&raw)?;
-    let (issues, dropped, unlocated) = verify(text, parsed);
+    // Paragraph blocks rather than the whole document. A model answers a block in a
+    // fraction of the time it needs to emit one JSON array for an essay, and each block
+    // that lands is emitted, so the first suggestions show up almost immediately.
+    let planned = blocks(text);
+    let total = planned.len();
+    let mut all: Vec<Issue> = Vec::new();
+    let mut dropped = 0usize;
+    let mut model = String::new();
+    let mut unreadable = 0usize;
+    let mut last_parse_error = String::new();
 
+    for (index, (offset, block)) in planned.iter().enumerate() {
+        let (system, user) = prompt::grammar_prompt(block);
+        let (used, raw) =
+            openrouter::complete(app, samples::GRAMMAR, attempts, &system, &user).await?;
+        model = used;
+
+        match parse_issues(&raw) {
+            Ok(parsed) => {
+                let (found, lost, _) = verify(block, parsed);
+                let base = utf16_len(&text[..*offset]);
+                all.extend(found.into_iter().map(|issue| issue.shifted(base)));
+                dropped += lost;
+            }
+            Err(err) => {
+                // One block answered in prose must not throw away the blocks that worked.
+                unreadable += 1;
+                last_parse_error = err;
+            }
+        }
+
+        // Ids are React keys, so they are re-numbered after every merge rather than per
+        // block, where two blocks would both start at `m0`.
+        for (position, issue) in all.iter_mut().enumerate() {
+            issue.id = format!("m{position}");
+        }
+        all.sort_by_key(|issue| if issue.unique { issue.start } else { usize::MAX });
+
+        if let Some(handle) = app {
+            let _ = handle.emit(
+                PROGRESS_EVENT,
+                Progress {
+                    done: index + 1,
+                    total,
+                    issues: all.clone(),
+                    model: model.clone(),
+                },
+            );
+        }
+    }
+
+    // Nothing parsed at all is a failed check, not a clean document.
+    if all.is_empty() && unreadable == total {
+        return Err(last_parse_error);
+    }
+
+    let unlocated = all.iter().filter(|issue| !issue.unique).count();
     Ok(GrammarResult {
-        issues,
+        issues: all,
         model,
         dropped,
         unlocated,
     })
+}
+
+/// Paragraph blocks with the byte offset each one starts at.
+///
+/// A blank line is where a document can be checked on its own: a quoted mistake never
+/// spans one, so a block's issues belong to that block. Long paragraphs are cut at the
+/// last line break that fits, because a free model given two thousand words of raw prose
+/// answers far more slowly than one given a few hundred.
+fn blocks(text: &str) -> Vec<(usize, String)> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut start = 0usize;
+    let mut last_break: Option<usize> = None;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let blank_line = index + 1 < bytes.len() && bytes[index] == b'\n' && bytes[index + 1] == b'\n';
+        if blank_line {
+            if index > start {
+                out.push((start, text[start..index].to_string()));
+            }
+            let mut next = index;
+            while next < bytes.len() && bytes[next] == b'\n' {
+                next += 1;
+            }
+            start = next;
+            last_break = None;
+            index = next;
+            continue;
+        }
+
+        if bytes[index] == b'\n' {
+            last_break = Some(index);
+        }
+        if index.saturating_sub(start) >= BLOCK_CHARS {
+            if let Some(end) = last_break.filter(|end| *end > start) {
+                out.push((start, text[start..end].to_string()));
+                start = end + 1;
+                last_break = None;
+            }
+        }
+        index += 1;
+    }
+
+    if start < bytes.len() {
+        out.push((start, text[start..].to_string()));
+    }
+
+    // Whitespace-only blocks are not worth a request.
+    out.retain(|(_, block)| !block.trim().is_empty());
+    if out.is_empty() {
+        out.push((0, text.to_string()));
+    }
+    out
 }
 
 /// Pulls the JSON out of whatever wrapper the reply came in, and survives a reply
@@ -301,6 +436,46 @@ mod tests {
             message: Some("test".to_string()),
             category: Some(category.to_string()),
         }
+    }
+
+    #[test]
+    fn blocks_are_paragraphs_and_their_offsets_point_at_them() {
+        let text = "First para.\n\nSecond para.\n\n\nThird para.";
+        let planned = blocks(text);
+        assert_eq!(planned.len(), 3);
+        for (offset, block) in &planned {
+            assert_eq!(&text[*offset..*offset + block.len()], block);
+        }
+        assert_eq!(planned[1].1, "Second para.");
+    }
+
+    #[test]
+    fn a_long_paragraph_is_cut_at_a_line_break() {
+        let line = "a sentence that is long enough to matter.\n";
+        let text = line.repeat(60);
+        let planned = blocks(&text);
+        assert!(planned.len() > 1, "a long body is split");
+        for (offset, block) in &planned {
+            assert!(block.chars().count() <= BLOCK_CHARS + 64, "blocks stay small");
+            assert_eq!(&text[*offset..*offset + block.len()], block, "the offset is real");
+        }
+        let (offset, block) = planned.last().expect("at least one block");
+        assert_eq!(offset + block.len(), text.len(), "the last block runs to the end");
+    }
+
+    #[test]
+    fn shifting_a_block_issue_lands_on_the_same_words_in_the_document() {
+        let text = "Their is one.\n\nTheir is another.";
+        let planned = blocks(text);
+        let (offset, block) = &planned[1];
+        let (found, _, _) = verify(block, vec![raw("Their", "There", "grammar")]);
+        let base = utf16_len(&text[..*offset]);
+        let placed = found[0].clone().shifted(base);
+        assert_eq!(
+            slice_utf16(text, placed.start, placed.end),
+            Some("Their".to_string())
+        );
+        assert_eq!(placed.start, base, "the quote starts the second block");
     }
 
     #[test]

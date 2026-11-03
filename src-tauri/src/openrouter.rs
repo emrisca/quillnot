@@ -464,7 +464,7 @@ pub async fn stream_block(
     let mut last_error = String::new();
     for (attempt_index, attempt) in attempts.iter().enumerate() {
         if attempt_index > 0 {
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            backoff(attempt_index).await;
         }
 
         let model = attempt.model.clone();
@@ -506,6 +506,16 @@ pub async fn stream_block(
         }
     }
     Err(last_error)
+}
+
+/// Waits before the next provider in the chain.
+///
+/// Doubling rather than fixed: a rate limit that clears in a second is worth waiting
+/// for, and one that does not clear is worth giving up on. Capped at five seconds so a
+/// chain of three models is a delay, not a hang.
+async fn backoff(attempt: usize) {
+    let step = 700u64.saturating_mul(1u64 << attempt.min(3));
+    tokio::time::sleep(Duration::from_millis(step.min(5_000))).await;
 }
 
 /// One line in the sample log, whether the call worked or not: a failure is evidence
@@ -680,7 +690,7 @@ pub async fn complete(
     let mut last_error = String::new();
     for (index, attempt) in attempts.iter().enumerate() {
         if index > 0 {
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            backoff(index).await;
         }
 
         let started = std::time::Instant::now();

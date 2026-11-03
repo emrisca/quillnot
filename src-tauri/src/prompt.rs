@@ -73,7 +73,9 @@ pub fn grammar_prompt(text: &str) -> (String, String) {
          - \"replacement\" is what that span becomes. It may be empty to delete something.\n\
          - \"message\" is one short sentence a writer would understand.\n\
          - For a doubled space or a space before punctuation, quote the run of spaces itself.\n\
-         - No issue if the text is already correct: answer {{\"issues\":[]}}. Never pad the list.\n\n\
+         - No issue if the text is already correct: answer {{\"issues\":[]}}. Never pad the list.\n\
+         - At most eight issues. Pick the ones a writer would fix first, because a long \
+           list takes longer to arrive than anyone will wait.\n\n\
          Text:\n\n{text}"
     );
     (GRAMMAR_SYSTEM.to_string(), user)

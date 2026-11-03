@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../icons";
-import { applyIssue, checkGrammar, type Issue } from "../lib/grammar";
+import { applyIssue, checkGrammar, onCheckProgress, type Issue } from "../lib/grammar";
 import { takeRestore } from "../lib/history";
 import { useConnection } from "../lib/connection";
 import { isDesktop } from "../lib/openrouter";
@@ -23,6 +23,10 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const [dropped, setDropped] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Which block of the document is being checked, while it runs.
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // The underlines are drawn by a mirror behind the textarea; this is its scroll position.
+  const mirror = useRef<HTMLDivElement>(null);
 
   const live = isDesktop() && connection.connected;
   const words = countWords(text);
@@ -32,10 +36,26 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
     return tally;
   }, [issues]);
 
+  // The backend checks paragraph by paragraph, and every event carries all the issues
+  // found so far, so cards appear while the rest of the document is still being read.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let stop: (() => void) | undefined;
+    void onCheckProgress((next) => {
+      setIssues(next.issues);
+      if (next.model) setModel(next.model);
+      setProgress({ done: next.done, total: next.total });
+    }).then((off) => {
+      stop = off;
+    });
+    return () => stop?.();
+  }, []);
+
   async function check() {
     if (!text.trim() || busy) return;
     setBusy(true);
     setError(null);
+    setProgress({ done: 0, total: 0 });
     try {
       const result = await checkGrammar(text);
       setIssues(result.issues);
@@ -88,6 +108,23 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
     setIssues(issues ? issues.filter((item) => item.id !== issue.id).map((item) => shift(item, issue)) : null);
   }
 
+  // Only placed issues can be underlined: an unplaced one has no span to underline.
+  const marked = useMemo<ReactNode[]>(() => {
+    const placed = (issues ?? [])
+      .filter((issue) => issue.unique !== false && issue.end > issue.start)
+      .sort((a, b) => a.start - b.start);
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+    for (const issue of placed) {
+      if (issue.start < cursor) continue;
+      parts.push(text.slice(cursor, issue.start));
+      parts.push(<mark key={issue.id}>{text.slice(issue.start, issue.end)}</mark>);
+      cursor = issue.end;
+    }
+    parts.push(text.slice(cursor));
+    return parts;
+  }, [text, issues]);
+
   const applyable = (issues ?? []).filter((issue) => issue.unique !== false);
 
   return (
@@ -138,14 +175,24 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
               </div>
             </header>
 
-            <textarea
-              className="editor"
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder="Paste the text you want checked…"
-              spellCheck
-              aria-label="Text to check"
-            />
+            <div className="editorstack">
+              {/* Same class, same font, same padding as the textarea, with transparent
+                  text: the marks line up because the wrapping does. */}
+              <div className="editor editorstack__mirror" ref={mirror} aria-hidden="true">
+                {marked}
+              </div>
+              <textarea
+                className="editor editorstack__input"
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                onScroll={(event) => {
+                  if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop;
+                }}
+                placeholder="Paste the text you want checked…"
+                spellCheck
+                aria-label="Text to check"
+              />
+            </div>
 
             <footer className="pane__foot">
               <span className="count">
@@ -257,6 +304,9 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
             <footer className="pane__foot">
               <span className="count count--soft">
                 {issues ? `${issues.length} open` : "not run"}
+                {busy && progress && progress.total > 0
+                  ? ` · block ${progress.done} of ${progress.total}`
+                  : ""}
                 {dropped > 0 ? ` · ${dropped} not trusted` : ""}
               </span>
               <span className="count count--soft">
