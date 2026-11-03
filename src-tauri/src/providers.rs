@@ -22,9 +22,15 @@ pub struct Provider {
     /// What the free tier actually is, in one line.
     pub free_tier: &'static str,
     pub docs: &'static str,
-    /// Every key from this provider starts with this, which is the cheapest possible
-    /// check for a pasted-the-wrong-thing mistake. None means "do not guess".
-    pub key_prefix: Option<&'static str>,
+    /// The prefixes this provider issues keys under, newest first: the cheapest
+    /// possible check for a pasted-the-wrong-thing mistake. Google has two live
+    /// shapes at once (`AQ.` Auth keys and the older `AIza`), so this is a list.
+    /// Empty means "do not guess", which is right for a local server and for Mistral.
+    pub key_prefixes: &'static [&'static str],
+    /// Gemini's native endpoint, whose body and stream are its own shape. It is used
+    /// for Google because the `AQ.` keys AI Studio now issues are rejected on the
+    /// OpenAI-compatible route.
+    pub gemini: bool,
     pub supports_oauth: bool,
     /// Model used when nobody has overridden it. Editable per provider in Settings,
     /// because these ids move faster than any app release.
@@ -40,7 +46,8 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://openrouter.ai/api/v1",
         free_tier: "Zero-priced models, 17 of them when this was written, plus a gateway router.",
         docs: "https://openrouter.ai/docs",
-        key_prefix: Some("sk-or-"),
+        key_prefixes: &["sk-or-"],
+        gemini: false,
         supports_oauth: true,
         default_model: "openrouter/free",
         needs_key: true,
@@ -48,10 +55,15 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: "google",
         label: "Google AI Studio",
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        // The native base, not `/v1beta/openai`: an `AQ.` key authenticates on this
+        // route and comes back as an invalid key on the OpenAI-compatible one.
+        base_url: "https://generativelanguage.googleapis.com/v1beta",
         free_tier: "Free tier on the Gemini API, rate-limited per model.",
-        docs: "https://ai.google.dev/gemini-api/docs/openai",
-        key_prefix: Some("AIza"),
+        docs: "https://ai.google.dev/gemini-api/docs",
+        // Newest first: AI Studio hands out `AQ.` Auth keys now, and a Standard
+        // `AIza` key keeps working until Google retires the format.
+        key_prefixes: &["AQ.", "AIza"],
+        gemini: true,
         supports_oauth: false,
         default_model: "gemini-2.5-flash",
         needs_key: true,
@@ -62,7 +74,8 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.groq.com/openai/v1",
         free_tier: "Free tier with generous requests per minute on open models.",
         docs: "https://console.groq.com/docs/openai",
-        key_prefix: Some("gsk_"),
+        key_prefixes: &["gsk_"],
+        gemini: false,
         supports_oauth: false,
         default_model: "llama-3.3-70b-versatile",
         needs_key: true,
@@ -73,7 +86,8 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.cerebras.ai/v1",
         free_tier: "Free tier on wafer-scale inference, very fast.",
         docs: "https://inference-docs.cerebras.ai",
-        key_prefix: Some("csk-"),
+        key_prefixes: &["csk-"],
+        gemini: false,
         supports_oauth: false,
         default_model: "llama3.3-70b",
         needs_key: true,
@@ -84,7 +98,8 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "https://api.mistral.ai/v1",
         free_tier: "Free experimentation tier on La Plateforme.",
         docs: "https://docs.mistral.ai",
-        key_prefix: None,
+        key_prefixes: &[],
+        gemini: false,
         supports_oauth: false,
         default_model: "mistral-small-latest",
         needs_key: true,
@@ -95,7 +110,8 @@ pub const PROVIDERS: &[Provider] = &[
         base_url: "",
         free_tier: "Anything OpenAI-compatible: Ollama, LM Studio, llama.cpp, vLLM.",
         docs: "https://platform.openai.com/docs/api-reference/chat",
-        key_prefix: None,
+        key_prefixes: &[],
+        gemini: false,
         supports_oauth: false,
         default_model: "",
         // A local server usually wants no Authorization header at all.
@@ -105,6 +121,31 @@ pub const PROVIDERS: &[Provider] = &[
 
 pub fn get(id: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|provider| provider.id == id)
+}
+
+/// Whether a pasted key has the shape this provider issues. An empty list means the
+/// provider has no prefix worth guessing at, and everything is let through.
+pub fn key_accepted(provider: &Provider, key: &str) -> bool {
+    provider.key_prefixes.is_empty()
+        || provider
+            .key_prefixes
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
+/// `“AQ.” (or the older “AIza”)` — the one message a wrong paste gets.
+pub fn key_prefix_list(provider: &Provider) -> String {
+    match provider.key_prefixes {
+        [] => "no particular prefix".to_string(),
+        [one] => format!("“{one}”"),
+        [first, rest @ ..] => format!(
+            "“{first}” (or the older {})",
+            rest.iter()
+                .map(|prefix| format!("“{prefix}”"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 pub const DEFAULT_PROVIDER: &str = "openrouter";
@@ -118,6 +159,8 @@ pub struct Attempt {
     /// OpenRouter wants attribution headers and has its own router model; the others
     /// take the plain OpenAI body.
     pub openrouter: bool,
+    /// Speak Gemini's native `contents` shape rather than OpenAI's `messages`.
+    pub gemini: bool,
 }
 
 /// Where a rewrite goes: the chosen provider first, then whatever else can answer.
@@ -193,7 +236,7 @@ pub fn statuses(app: &AppHandle) -> Vec<ProviderStatus> {
                 base_url: base_url_for(&settings, provider),
                 free_tier: provider.free_tier.to_string(),
                 docs: provider.docs.to_string(),
-                key_prefix: provider.key_prefix.map(str::to_string),
+                key_prefix: provider.key_prefixes.first().map(|prefix| (*prefix).to_string()),
                 supports_oauth: provider.supports_oauth,
                 default_model: provider.default_model.to_string(),
                 needs_key: provider.needs_key,
@@ -240,6 +283,7 @@ fn build_route(
         key: key.clone(),
         model: model.clone(),
         openrouter: provider.id == "openrouter",
+        gemini: provider.gemini,
     }];
 
     if provider.id == "openrouter" {
@@ -256,6 +300,7 @@ fn build_route(
                 key: key.clone(),
                 model: id.clone(),
                 openrouter: true,
+                gemini: false,
             });
         }
         if model != "openrouter/free" && attempts.len() < MAX_ATTEMPTS {
@@ -264,6 +309,7 @@ fn build_route(
                 key,
                 model: "openrouter/free".to_string(),
                 openrouter: true,
+                gemini: false,
             });
         }
     } else if let Some(openrouter_key) = store::load_key_for("openrouter") {
@@ -272,6 +318,7 @@ fn build_route(
             key: Some(openrouter_key),
             model: "openrouter/free".to_string(),
             openrouter: true,
+            gemini: false,
         });
     }
 
@@ -367,6 +414,7 @@ pub fn resolve_headless(model_override: Option<String>) -> Result<Route, String>
             key: Some(key),
             model,
             openrouter: true,
+            gemini: false,
         }],
     })
 }
@@ -512,5 +560,40 @@ mod tests {
     fn the_custom_endpoint_needs_no_key() {
         assert!(!get("custom").unwrap().needs_key);
         assert!(get("openrouter").unwrap().needs_key);
+    }
+
+    #[test]
+    fn both_google_key_shapes_are_accepted() {
+        let google = get("google").unwrap();
+        // The Auth key AI Studio issues now, and the Standard key it used to.
+        assert!(key_accepted(google, "AQ.Ab8RN6IXJ4hL"));
+        assert!(key_accepted(google, "AIzaSyD-0123456789"));
+        assert!(!key_accepted(google, "sk-or-v1-abc"));
+        assert!(!key_accepted(google, ""));
+    }
+
+    #[test]
+    fn the_bad_paste_message_names_the_current_prefix_first() {
+        let message = key_prefix_list(get("google").unwrap());
+        assert!(message.starts_with("“AQ.”"), "{message}");
+        assert!(message.contains("AIza"), "{message}");
+        assert_eq!(key_prefix_list(get("groq").unwrap()), "“gsk_”");
+    }
+
+    #[test]
+    fn a_provider_without_a_guessable_prefix_takes_anything() {
+        assert!(key_accepted(get("custom").unwrap(), "anything at all"));
+        assert!(key_accepted(get("mistral").unwrap(), ""));
+    }
+
+    #[test]
+    fn googles_first_attempt_speaks_gemini_on_the_native_base() {
+        let settings = settings(&[], Some("google"));
+        if let Ok(route) = build_route(get("google").unwrap(), &settings, None, &Picks::default()) {
+            let first = &route.attempts[0];
+            assert!(first.gemini, "Google has to use its own shape");
+            assert!(first.base_url.ends_with("/v1beta"), "{}", first.base_url);
+            assert!(!first.base_url.contains("/openai"), "{}", first.base_url);
+        }
     }
 }

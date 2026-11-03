@@ -622,6 +622,10 @@ async fn stream_once(
     // so it is Send in practice; the bound just has to say so.
     on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, String> {
+    if attempt.gemini {
+        return gemini_stream(attempt, system, user, on_delta).await;
+    }
+
     #[derive(Serialize)]
     struct Message<'a> {
         role: &'a str,
@@ -812,6 +816,9 @@ async fn complete_once(
     system: &str,
     user: &str,
 ) -> Result<Call, String> {
+    if attempt.gemini {
+        return gemini_complete(app, attempt, system, user).await;
+    }
     let call_started = std::time::Instant::now();
 
     #[derive(Serialize)]
@@ -960,6 +967,235 @@ struct CompletionChunk {
     error: Option<ChunkError>,
 }
 
+/* -------------------------------------------------------------------- Gemini */
+
+/// Google's native endpoint differs from the OpenAI-compatible one in three ways: the
+/// key goes in `x-goog-api-key` rather than an `Authorization` bearer, the request is
+/// `contents`/`systemInstruction` rather than `messages`, and a stream is a list of
+/// candidates rather than choices.
+///
+/// The reason this path exists at all is the key format. AI Studio now issues Auth
+/// keys that start with `AQ.`, and they authenticate here while the OpenAI-compatible
+/// route rejects them with an error that blames a key which is perfectly good.
+fn gemini_id(model: &str) -> &str {
+    let model = model.trim();
+    model.strip_prefix("models/").unwrap_or(model)
+}
+
+fn gemini_url(attempt: &providers::Attempt, method: &str) -> String {
+    format!(
+        "{}/models/{}:{method}",
+        attempt.base_url.trim_end_matches('/'),
+        gemini_id(&attempt.model)
+    )
+}
+
+fn gemini_body(system: &str, user: &str, temperature: f32) -> serde_json::Value {
+    serde_json::json!({
+        "systemInstruction": { "parts": [{ "text": system }] },
+        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+        "generationConfig": { "temperature": temperature },
+    })
+}
+
+fn gemini_post(
+    attempt: &providers::Attempt,
+    method: &str,
+    system: &str,
+    user: &str,
+    temperature: f32,
+) -> Result<reqwest::RequestBuilder, String> {
+    let mut outgoing = http::client()?
+        .post(gemini_url(attempt, method))
+        .json(&gemini_body(system, user, temperature));
+    if let Some(key) = attempt.key.as_deref() {
+        outgoing = outgoing.header("x-goog-api-key", key);
+    }
+    Ok(outgoing)
+}
+
+/// The text one chunk carries. A candidate can arrive with no parts at all — a safety
+/// block or a bare finish frame — which is nothing to show, not an error.
+fn gemini_text(chunk: GeminiChunk) -> Option<String> {
+    let text: String = chunk
+        .candidates
+        .into_iter()
+        .filter_map(|candidate| candidate.content)
+        .flat_map(|content| content.parts)
+        .filter_map(|part| part.text)
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
+
+async fn gemini_stream(
+    attempt: &providers::Attempt,
+    system: &str,
+    user: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    let host = host_of(&attempt.base_url);
+    let model = attempt.model.clone();
+
+    let response = gemini_post(attempt, "streamGenerateContent", system, user, 0.5)?
+        .query(&[("alt", "sse")])
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {host}: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await.unwrap_or_default();
+        return Err(status_error(&host, &model, status, retry_after, &body));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut pending = String::new();
+    let mut out = String::new();
+
+    loop {
+        let chunk = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(chunk)) => chunk.map_err(|e| format!("the reply stopped early: {e}"))?,
+            Ok(None) => break,
+            Err(_) => {
+                return Err(format!(
+                    "{model} stopped sending for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                ))
+            }
+        };
+        // Gemini's frames end in `\r\n\r\n`; normalising here keeps the split below
+        // the same two-newline test the OpenAI stream uses.
+        pending.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
+
+        while let Some(end) = pending.find("\n\n") {
+            let event: String = pending.drain(..end + 2).collect();
+            for line in event.lines() {
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let payload = payload.trim();
+                if payload.is_empty() || payload == "[DONE]" {
+                    continue;
+                }
+                let Ok(parsed) = serde_json::from_str::<GeminiChunk>(payload) else {
+                    continue;
+                };
+                if let Some(error) = parsed.error {
+                    return Err(format!("{model}: {}", http::clip(&error.message)));
+                }
+                if let Some(text) = gemini_text(parsed) {
+                    out.push_str(&text);
+                    on_delta(&text);
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+async fn gemini_complete(
+    app: Option<&AppHandle>,
+    attempt: &providers::Attempt,
+    system: &str,
+    user: &str,
+) -> Result<Call, String> {
+    let call_started = std::time::Instant::now();
+    let host = host_of(&attempt.base_url);
+    let model = attempt.model.clone();
+
+    let response = gemini_post(attempt, "generateContent", system, user, 0.2)?
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {host}: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await.unwrap_or_default();
+        return Err(status_error(&host, &model, status, retry_after, &body));
+    }
+
+    // Time to the headers, recorded before the body is read, the same way the
+    // OpenAI-shaped path does it.
+    let ttft_ms = Some(call_started.elapsed().as_millis() as u64);
+    let quota_headers = response.headers().clone();
+    note_quota(app, &host, &quota_headers);
+
+    let reply: GeminiChunk = response
+        .json()
+        .await
+        .map_err(|e| format!("could not read {host}'s reply: {e}"))?;
+    if let Some(error) = reply.error {
+        return Err(format!("{model}: {}", http::clip(&error.message)));
+    }
+    // Gemini counts what it spent in `usageMetadata`, under its own names.
+    let tokens_in = reply.usage.as_ref().and_then(|usage| usage.prompt_token_count);
+    let tokens_out = reply
+        .usage
+        .as_ref()
+        .and_then(|usage| usage.candidates_token_count);
+    let text = gemini_text(reply).ok_or_else(|| format!("{host} answered without any content"))?;
+
+    Ok(Call {
+        body: text,
+        meta: samples::CallMeta {
+            provider: Some(host),
+            ttft_ms,
+            tokens_in,
+            tokens_out,
+            status: Some(status.as_u16()),
+        },
+    })
+}
+
+#[derive(Deserialize)]
+struct GeminiChunk {
+    #[serde(default)]
+    candidates: Vec<GeminiCandidate>,
+    #[serde(default)]
+    error: Option<ChunkError>,
+    // Gemini spells it `usageMetadata`, not `usage`.
+    #[serde(default, rename = "usageMetadata")]
+    usage: Option<GeminiUsage>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiUsage {
+    #[serde(default)]
+    prompt_token_count: Option<u64>,
+    #[serde(default)]
+    candidates_token_count: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GeminiCandidate {
+    #[serde(default)]
+    content: Option<GeminiContent>,
+}
+
+#[derive(Deserialize, Default)]
+struct GeminiContent {
+    #[serde(default)]
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Deserialize)]
+struct GeminiPart {
+    #[serde(default)]
+    text: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ChunkChoice {
     #[serde(default)]
@@ -1030,5 +1266,48 @@ mod tests {
         let parsed: CompletionChunk =
             serde_json::from_str("{\"error\":{\"message\":\"no credits\"}}").unwrap();
         assert_eq!(parsed.error.unwrap().message, "no credits");
+    }
+
+    #[test]
+    fn a_gemini_chunk_yields_its_text() {
+        let chunk: GeminiChunk = serde_json::from_str(
+            "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hel\"},{\"text\":\"lo\"}]}}]}",
+        )
+        .unwrap();
+        assert_eq!(gemini_text(chunk), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn a_gemini_finish_frame_is_not_an_error() {
+        let chunk: GeminiChunk =
+            serde_json::from_str("{\"candidates\":[{\"finishReason\":\"STOP\"}]}").unwrap();
+        assert_eq!(gemini_text(chunk), None);
+    }
+
+    #[test]
+    fn a_gemini_error_frame_is_recognised() {
+        let chunk: GeminiChunk = serde_json::from_str(
+            "{\"error\":{\"code\":400,\"message\":\"API key not valid\"}}",
+        )
+        .unwrap();
+        assert_eq!(chunk.error.unwrap().message, "API key not valid");
+    }
+
+    #[test]
+    fn gemini_usage_is_read_under_its_own_names() {
+        let chunk: GeminiChunk = serde_json::from_str(
+            "{\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":7}}",
+        )
+        .unwrap();
+        let usage = chunk.usage.expect("usage metadata");
+        assert_eq!(usage.prompt_token_count, Some(12));
+        assert_eq!(usage.candidates_token_count, Some(7));
+    }
+
+    #[test]
+    fn a_models_prefix_does_not_double_up_in_the_url() {
+        assert_eq!(gemini_id("models/gemini-2.5-flash"), "gemini-2.5-flash");
+        assert_eq!(gemini_id("gemini-2.5-flash"), "gemini-2.5-flash");
+        assert_eq!(gemini_id(" gemini-2.5-flash "), "gemini-2.5-flash");
     }
 }

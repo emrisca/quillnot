@@ -102,8 +102,11 @@ lines are preserved: the splitter emits blocks, each block is rewritten on its o
 blocks are rejoined. Otherwise a paraphrase of an essay arrives as one wall of text, which is
 the single most common complaint about every one of these tools.
 
-**Providers, not just OpenRouter.** Every free tier worth using is OpenAI-compatible, so the
-client takes a base URL, a key and a model id instead of assuming one vendor. Settings lists
+**Providers, not just OpenRouter.** Nearly every free tier worth using is OpenAI-compatible, so
+the client takes a base URL, a key and a model id instead of assuming one vendor. Google is the
+exception now: AI Studio's `AQ.` Auth keys are rejected on Gemini's OpenAI-compatible route, so
+Google is called on its native endpoint — the key in `x-goog-api-key`, `contents` instead of
+`messages`, and a stream of candidates instead of choices. Settings lists
 them, each key in its own keychain entry, one of them active: that provider answers every
 rewrite, and when it refuses, the block falls through to OpenRouter's free router. The idea is
 FreeLLMAPI's (`github.com/tashfeenahmed/freellmapi`) without its middleman — no local router

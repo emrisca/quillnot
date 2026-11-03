@@ -115,12 +115,14 @@ pub fn run() -> i32 {
                 key: Some(key.clone()),
                 model: "definitely-not-a-real-model:free".to_string(),
                 openrouter: true,
+                gemini: false,
             },
             providers::Attempt {
                 base_url,
                 key: Some(key),
                 model: "openrouter/free".to_string(),
                 openrouter: true,
+                gemini: false,
             },
         ];
         let attempt = tokio::time::timeout(

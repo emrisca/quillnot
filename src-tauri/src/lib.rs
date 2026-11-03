@@ -300,10 +300,12 @@ fn save_provider_key(app: AppHandle, provider: String, key: String) -> Result<Ve
         return Err("Paste the key first.".into());
     }
     if let Some(info) = providers::get(&provider) {
-        if let Some(prefix) = info.key_prefix {
-            if !key.starts_with(prefix) {
-                return Err(format!("{} keys start with “{prefix}”.", info.label));
-            }
+        if !providers::key_accepted(info, &key) {
+            return Err(format!(
+                "{} keys start with {}.",
+                info.label,
+                providers::key_prefix_list(info)
+            ));
         }
     }
     store::save_key_for(&provider, &key)?;
