@@ -291,8 +291,10 @@ happen in Rust (`updates.rs`), because the endpoint, the key and the downloaded 
 should not be reachable from the webview; the frontend gets a version string and a byte
 count. Settings → Updates shows the version, checks on demand, lists the release notes and
 installs with a progress line, and a check at launch shows one dismissible bar only when
-something is actually there. `.github/workflows/release.yml` builds macOS (both
-architectures) and Windows on a `v*` tag through `tauri-action` with `includeUpdaterJson`.
+something is actually there. `.github/workflows/release.yml` builds Apple silicon and
+Windows on a `v*` tag through `tauri-action` with `includeUpdaterJson`. Intel Macs are not
+targeted: the job that built them was removed once nobody was going to install the result.
+
 What is still unproven is the last step: no release has been published, so no update has
 actually installed over a previous version. Two things worth knowing — the release key has
 to be in `.secrets/quillnot-updater.key` for `tauri build` to produce updater artifacts, and
