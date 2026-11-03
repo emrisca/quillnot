@@ -171,6 +171,9 @@ export function TyperView() {
                 {plan ? ` · ${plan.chars} keystrokes` : ""}
               </span>
               <div className="typer__actions">
+                {state.status === "typing" && state.typed === 0 ? (
+                  <span className="count count--soft">click into the window to type into</span>
+                ) : null}
                 {running ? (
                   <>
                     <button
@@ -308,6 +311,7 @@ export function TyperView() {
                 <li>Nothing is typed while a password field has focus.</li>
                 <li>The text comes from this editor, never from the clipboard.</li>
                 <li>Escape stops immediately, mid-word, wherever you are.</li>
+                <li>Start waits three seconds, so you can click into the target window.</li>
                 <li>Nothing that is typed is stored or sent anywhere.</li>
               </ul>
             </div>

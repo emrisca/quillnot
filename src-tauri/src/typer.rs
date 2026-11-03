@@ -28,6 +28,11 @@ use tauri::{AppHandle, Emitter, State};
 /// `src/lib/typer.ts` listens for exactly this string.
 pub const TYPER_EVENT: &str = "typer:state";
 
+/// Time between "start" and the first keystroke, so the person can put the focus where
+/// they actually want the text. Without it the first characters land in this app, which
+/// is the one window that is never the target.
+const COUNTDOWN_MS: u64 = 3_000;
+
 /// Below this nothing looks human, and above it the output is a paste with extra steps.
 const MIN_CPS: f64 = 2.0;
 const MAX_CPS: f64 = 18.0;
@@ -333,6 +338,17 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
     control.total.store(steps.len(), Ordering::Relaxed);
     control.set(Status::Typing);
     emit(&app, &control);
+
+    // The countdown, in slices so a stop lands during it rather than after it.
+    let mut waited = 0u64;
+    while waited < COUNTDOWN_MS {
+        if control.cancel.load(Ordering::Relaxed) {
+            finish(&app, &control, Status::Stopped, 0);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        waited += 100;
+    }
 
     let mut typed = 0usize;
     for step in steps {
