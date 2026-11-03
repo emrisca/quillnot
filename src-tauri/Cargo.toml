@@ -24,13 +24,26 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 futures-util = "0.3"
 
-# The key lives in the OS keychain, never in a file next to the app.
-keyring = "3"
-
 # PKCE: a verifier from the OS RNG, its SHA-256 challenge, base64url.
 rand = "0.8"
 sha2 = "0.10"
 base64 = "0.22"
+
+# The key lives in the OS keychain, never in a file next to the app.
+#
+# The backend is opt-in per platform in keyring 3: with the default features alone
+# the crate compiles and then fails at runtime with "no backend", which is a bug you
+# only discover by trying to sign in. `apple-native` is the Keychain,
+# `windows-native` the Credential Manager, and the Linux store is Secret Service over
+# pure-Rust crypto so no OpenSSL build is needed there.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [profile.release]
 codegen-units = 1

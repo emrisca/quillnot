@@ -110,4 +110,19 @@ mod tests {
     fn a_short_string_does_not_panic() {
         assert_eq!(hint("abc"), "…");
     }
+
+    /// Touches the real OS key store, so it is `#[ignore]`d out of the normal run.
+    /// This is the test that catches a build where keyring has no backend compiled
+    /// in — `Entry::new` fails there, and nobody can sign in at all.
+    #[test]
+    #[ignore = "touches the real OS key store"]
+    fn the_os_key_store_is_available() {
+        let entry = super::entry().expect("a key store backend is compiled in");
+        // Reading an item that does not exist must report absence, not break the
+        // store — the app asks this on every launch.
+        match entry.get_password() {
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Err(other) => panic!("unexpected key store error: {other}"),
+        }
+    }
 }
