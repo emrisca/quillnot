@@ -4,9 +4,6 @@ export type IconName =
   | "projects"
   | "paraphrase"
   | "grammar"
-  | "detector"
-  | "plagiarism"
-  | "humanize"
   | "summarize"
   | "translate"
   | "more"
@@ -36,11 +33,6 @@ const PATHS: Record<IconName, string> = {
     "M3 7.5A2.5 2.5 0 0 1 5.5 5h2.6l2 2.4h8.4A2.5 2.5 0 0 1 21 9.9v7.6A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z",
   paraphrase: "M20.2 4.4a5 5 0 0 0-7 0l-7 7v5.4h5.4l7-7a5 5 0 0 0 1.6-5.4zM4 20l6.5-6.5",
   grammar: "M4 18 8.6 6l4.6 12M5.8 14H12M15.8 14.8l2.2 2.4 4-5",
-  detector:
-    "M4 8.5V6a2 2 0 0 1 2-2h2.5M20 8.5V6a2 2 0 0 0-2-2h-2.5M4 15.5V18a2 2 0 0 0 2 2h2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8 12h8",
-  plagiarism: "M12 3.2 19 6v5.8c0 4.1-2.9 7.2-7 9-4.1-1.8-7-4.9-7-9V6zM9.2 12.2l2 2 3.6-4",
-  humanize:
-    "M12 12.2a3.9 3.9 0 1 0 0-7.8 3.9 3.9 0 0 0 0 7.8zM4.6 21c.7-3.5 3.6-5.4 7.4-5.4s6.7 1.9 7.4 5.4",
   summarize: "M5 7h14M5 12h14M5 17h9",
   translate:
     "M4.5 5h7M8 3.2v1.9c0 4.1-2.2 7.1-5 8.9M6.4 9.6c1 2.1 3.2 3.9 5.9 4.9M13.4 20.8 17.6 11l4.1 9.8M14.9 17.9h5.2",

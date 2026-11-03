@@ -259,9 +259,9 @@ right-click → Open, and the release notes say so.
 ### M6 · Polish
 
 Keyboard shortcuts (⌘↩ to run, ⌘C to copy the result), tone detection in the right rail,
-sentence-level diff comparison view, export to Markdown, and the "premium-ish" extras that
-QuillBot gates — summarize and humanize — as modes on the same client, since they are the same
-request with a different prompt.
+sentence-level diff comparison view, export to Markdown, and the one premium-ish extra worth
+having — summarize — as a mode on the same client, since it is the same request with a
+different prompt.
 
 ### M7 · The catalogue and the ranking
 
@@ -291,9 +291,14 @@ active one and a synonym slider on the right, the two-pane editor with per-pane 
 a green action pill, the right-hand action rail, and the pale-yellow suggestion card that offers
 a mode change.
 
-Not mirrored: the "Upgrade to Premium" banner, the AI-detector and plagiarism claims (they need
-a scoring model we do not have and would be dishonest to fake), and the QuillBot name and
-mark. Nothing here is scraped from QuillBot; the layout is a familiar shape, the code is ours.
+Not mirrored: the "Upgrade to Premium" banner, and the QuillBot name and mark. Nothing here is
+scraped from QuillBot; the layout is a familiar shape, the code is ours.
+
+**Removed outright:** the AI detector, the plagiarism checker and the AI humanizer. The first
+two need a trained classifier over text and a corpus of sources to compare against; faking
+either with a chat model produces confident nonsense, and both invite claims the app cannot
+support. The humanizer is a paraphrase aimed at a detector that does not exist here, so it was
+decoration. The rail advertises only what a text model can actually do, plus what is planned.
 
 ## 8. Risks
 

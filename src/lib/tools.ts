@@ -12,10 +12,12 @@ export type RailItem = {
   soon?: boolean;
 };
 
-// The rail is QuillBot's list, minus the tools that need a model we do not have
-// (an AI detector without a detector is a lie). Everything marked `soon` is
-// reachable later on the same client — summarise and humanise are the same
-// request with a different prompt.
+// Only what a text model can actually do. Paraphrasing and grammar checking are real;
+// everything marked `soon` is planned on the same client — Typer (§4), the model
+// catalogue (§3), summarising and translation, which are the same request with a
+// different prompt. The AI detector, plagiarism checker and humaniser were removed
+// rather than faked: the first two need a trained classifier and a corpus of sources,
+// and the third exists only to defeat the first.
 export const RAIL: RailItem[] = [
   { key: "projects", label: "Projects", icon: "projects", soon: true },
   { key: "paraphraser", label: "Paraphraser", icon: "paraphrase", tool: "paraphraser" },
@@ -24,9 +26,6 @@ export const RAIL: RailItem[] = [
   // planned feature nobody can see is one nobody asks for. Typer mimics human
   // typing (plan §4); AI Models is the scored free-endpoint catalogue (§3).
   { key: "typer", label: "Typer", icon: "typer", soon: true },
-  { key: "detector", label: "AI Detector", icon: "detector", soon: true },
-  { key: "plagiarism", label: "Plagiarism Checker", icon: "plagiarism", soon: true },
-  { key: "humanizer", label: "AI Humanizer", icon: "humanize", soon: true },
   { key: "summarizer", label: "Summarizer", icon: "summarize", soon: true },
   { key: "translate", label: "Translate", icon: "translate", soon: true },
   { key: "models", label: "AI Models", icon: "models", soon: true },
