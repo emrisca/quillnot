@@ -346,6 +346,22 @@ fn wanted_order(
     }
     wanted.extend(picks.ranked.iter().cloned());
 
+    // The older "default model" setting is an OpenRouter id typed by hand. The ranking
+    // outranks it because the ranking is a measurement and this is a preference, but it
+    // still gets a turn above the provider's configured model, which is where it sat
+    // before the providers were merged.
+    if let Some(model) = settings
+        .default_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        wanted.push(Selected {
+            provider: DEFAULT_PROVIDER.to_string(),
+            model: model.to_string(),
+        });
+    }
+
     // The active provider still gets a turn when nothing has been measured yet, and the
     // gateway router is the last thing that can answer.
     wanted.push(Selected {
@@ -626,6 +642,27 @@ mod tests {
         .map(Selected::id)
         .collect();
         assert_eq!(ids[0], "typed");
+    }
+
+    #[test]
+    fn the_older_default_model_setting_is_still_a_fallback() {
+        let mut settings = settings(&[], Some("groq"));
+        settings.default_model = Some("openai/gpt-oss-20b:free".into());
+        let picks = picks(Some(("groq", "best")), &[("groq", "best")]);
+        let ids = order(&settings, &picks, "groq");
+
+        let default_at = ids
+            .iter()
+            .position(|id| id == "openai/gpt-oss-20b:free")
+            .unwrap_or_else(|| panic!("the setting has to survive: {ids:?}"));
+        let configured_at = ids
+            .iter()
+            .position(|id| id == "groq::llama-3.3-70b-versatile")
+            .expect("the configured model is the last local resort");
+        assert!(
+            default_at < configured_at,
+            "the ranking comes first, then the old setting: {ids:?}"
+        );
     }
 
     #[test]
