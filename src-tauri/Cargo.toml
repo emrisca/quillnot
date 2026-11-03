@@ -18,6 +18,20 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The network half. rustls rather than the platform TLS stack so the Windows and
+# macOS builds link the same code; `stream` is what the SSE reader needs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util", "sync"] }
+futures-util = "0.3"
+
+# The key lives in the OS keychain, never in a file next to the app.
+keyring = "3"
+
+# PKCE: a verifier from the OS RNG, its SHA-256 challenge, base64url.
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+
 [profile.release]
 codegen-units = 1
 lto = true

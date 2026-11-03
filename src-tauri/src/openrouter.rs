@@ -1,0 +1,594 @@
+//! The OpenRouter client: sign-in, and the streaming rewrite.
+//!
+//! Two things live here. The OAuth PKCE flow (no key is ever typed by hand unless
+//! someone wants to) and the completion call that the workspace actually makes.
+//!
+//! The sign-in binds a loopback listener on an ephemeral port, sends the browser to
+//! `openrouter.ai/auth` with a SHA-256 challenge, and takes the `code` that comes
+//! back on `/callback`. That code is exchanged for a *user-controlled* key, which is
+//! written to the OS keychain and never returned to the webview — the frontend only
+//! ever sees [`crate::KeyStatus`].
+
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+
+use crate::prompt;
+use crate::store;
+use crate::DELTA_EVENT;
+
+const API: &str = "https://openrouter.ai/api/v1";
+
+/// Used when nobody has pinned a model. The gateway's own free router, so the first
+/// run has something sensible to call before M7 scores the catalogue.
+pub const FALLBACK_MODEL: &str = "openrouter/free";
+
+/// How long one block may take before we give up on that model. Free models can be
+/// slow, but a stream that has not finished in three minutes is not going to.
+const BLOCK_TIMEOUT: Duration = Duration::from_secs(180);
+
+pub mod http {
+    use std::time::Duration;
+
+    use serde::de::DeserializeOwned;
+
+    pub fn client() -> Result<reqwest::Client, String> {
+        reqwest::Client::builder()
+            .user_agent("QuillNot/0.1.0 (Tauri desktop)")
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("could not build the HTTP client: {e}"))
+    }
+
+    pub async fn get_json<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+        let response = client()?
+            .get(url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(describe)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("OpenRouter answered {status}: {}", clip(&body)));
+        }
+        response
+            .json::<T>()
+            .await
+            .map_err(|e| format!("could not read OpenRouter's reply: {e}"))
+    }
+
+    fn describe(err: reqwest::Error) -> String {
+        if err.is_timeout() {
+            "OpenRouter did not answer in time.".to_string()
+        } else if err.is_connect() {
+            "could not reach openrouter.ai — check the connection.".to_string()
+        } else {
+            format!("request failed: {err}")
+        }
+    }
+
+    pub fn clip(body: &str) -> String {
+        let trimmed = body.trim();
+        if trimmed.chars().count() > 280 {
+            format!("{}…", trimmed.chars().take(280).collect::<String>())
+        } else {
+            trimmed.to_string()
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ sign-in */
+
+#[derive(Deserialize)]
+struct KeyExchange {
+    key: String,
+}
+
+pub async fn sign_in() -> Result<crate::KeyStatus, String> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|e| format!("could not open the local callback port: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("could not read the callback port: {e}"))?
+        .port();
+
+    let callback = format!("http://127.0.0.1:{port}/callback");
+    let verifier = random_token(48);
+    let challenge = pkce_challenge(&verifier);
+    let url = format!(
+        "https://openrouter.ai/auth?callback_url={callback}\
+         &code_challenge={challenge}&code_challenge_method=S256&key_label=QuillNot"
+    );
+
+    open_browser(&url)?;
+
+    let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(listener))
+        .await
+        .map_err(|_| {
+            "signing in timed out — the browser window was left open for too long.".to_string()
+        })??;
+
+    let key = exchange_code(&code, &verifier).await?;
+    store::save_key(&key)?;
+    Ok(store::key_status())
+}
+
+/// Accepts the redirect, answers it with a sentence the person can read, and hands
+/// back the `code`. A browser may fetch `/favicon.ico` first, so a handful of
+/// connections are tolerated before giving up.
+async fn wait_for_code(listener: tokio::net::TcpListener) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    for _ in 0..8 {
+        let (mut socket, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; 8192];
+        let read = socket.read(&mut buf).await.map_err(|e| e.to_string())?;
+        let request = String::from_utf8_lossy(&buf[..read]).to_string();
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default()
+            .to_string();
+
+        let code = query_param(&target, "code");
+        let (status, body) = match code {
+            Some(_) => (
+                "200 OK",
+                "<!doctype html><title>QuillNot</title><body style=\"font:16px -apple-system,sans-serif;padding:3rem;line-height:1.6\">\
+                 <h2 style=\"font-weight:600\">QuillNot is connected</h2>\
+                 <p>You can close this tab and go back to the app.</p></body>",
+            ),
+            None => (
+                "400 Bad Request",
+                "<!doctype html><title>QuillNot</title><body style=\"font:16px -apple-system,sans-serif;padding:3rem;line-height:1.6\">\
+                 <h2 style=\"font-weight:600\">No code came back</h2>\
+                 <p>Close this tab and try signing in again from QuillNot.</p></body>",
+            ),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.shutdown().await;
+
+        if let Some(code) = code {
+            return Ok(code);
+        }
+    }
+
+    Err("the browser never came back with an authorization code.".to_string())
+}
+
+fn query_param(path: &str, name: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == name {
+            return percent_decode(value);
+        }
+    }
+    None
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                index += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+async fn exchange_code(code: &str, verifier: &str) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        code: &'a str,
+        code_verifier: &'a str,
+        code_challenge_method: &'a str,
+    }
+
+    let response = http::client()?
+        .post(format!("{API}/auth/keys"))
+        .json(&Body {
+            code,
+            code_verifier: verifier,
+            code_challenge_method: "S256",
+        })
+        .send()
+        .await
+        .map_err(|e| format!("could not reach OpenRouter to finish signing in: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "OpenRouter refused the sign-in: {}",
+            http::clip(&body)
+        ));
+    }
+
+    let body: KeyExchange = response
+        .json()
+        .await
+        .map_err(|e| format!("could not read the key OpenRouter returned: {e}"))?;
+    if body.key.trim().is_empty() {
+        return Err("OpenRouter returned an empty key.".to_string());
+    }
+    Ok(body.key)
+}
+
+fn random_token(bytes: usize) -> String {
+    use base64::Engine;
+    let mut buffer = vec![0u8; bytes];
+    rand::thread_rng().fill_bytes(&mut buffer);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buffer)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+#[cfg(target_os = "macos")]
+fn open_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the browser: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn open_browser(url: &str) -> Result<(), String> {
+    // The empty argument after `start` is the window title; without it, a URL
+    // containing an ampersand would be read as a command separator.
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the browser: {e}"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the browser: {e}"))
+}
+
+/* --------------------------------------------------------------- paraphrase */
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParaphraseRequest {
+    pub text: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub strength: Option<u8>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParaphraseResult {
+    pub text: String,
+    pub model: String,
+    pub blocks: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Delta {
+    block: usize,
+    text: String,
+    model: String,
+}
+
+pub async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<ParaphraseResult, String> {
+    let key = store::load_key()
+        .ok_or_else(|| "Connect an OpenRouter account in Settings first.".to_string())?;
+
+    let text = request.text.trim();
+    if text.is_empty() {
+        return Err("There is nothing to paraphrase.".to_string());
+    }
+
+    let mode = request.mode.unwrap_or_else(|| "standard".to_string());
+    let strength = request.strength.unwrap_or(2).clamp(1, 4);
+    let preferred = request
+        .model
+        .or_else(|| store::read_settings(&app).default_model)
+        .unwrap_or_else(|| FALLBACK_MODEL.to_string());
+
+    let blocks = prompt::split_blocks(text, 4000);
+    let mut rewritten: Vec<String> = Vec::with_capacity(blocks.len());
+    let mut used = preferred.clone();
+
+    for (index, block) in blocks.iter().enumerate() {
+        // The separator is emitted as a delta too, so the pane grows exactly as the
+        // text will be assembled instead of running paragraphs together mid-stream.
+        if index > 0 {
+            let _ = app.emit(
+                DELTA_EVENT,
+                Delta {
+                    block: index,
+                    text: "\n\n".to_string(),
+                    model: used.clone(),
+                },
+            );
+        }
+
+        let (system, user) = prompt::paraphrase_prompt(block, &mode, strength);
+        let (model, body) = stream_block(&app, &key, &preferred, &system, &user, index).await?;
+        used = model;
+        rewritten.push(body);
+    }
+
+    Ok(ParaphraseResult {
+        text: rewritten.join("\n\n"),
+        model: used,
+        blocks: blocks.len(),
+    })
+}
+
+/// One block, with the fallback the plan promised: the preferred model first, the
+/// gateway router after it. An empty rewrite counts as a failure — a model that
+/// answers with nothing has not answered.
+async fn stream_block(
+    app: &AppHandle,
+    key: &str,
+    preferred: &str,
+    system: &str,
+    user: &str,
+    index: usize,
+) -> Result<(String, String), String> {
+    let mut candidates = vec![preferred.to_string()];
+    if preferred != FALLBACK_MODEL {
+        candidates.push(FALLBACK_MODEL.to_string());
+    }
+
+    let mut last_error = String::new();
+    for (attempt, model) in candidates.iter().enumerate() {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        match tokio::time::timeout(BLOCK_TIMEOUT, stream_once(app, key, model, system, user, index)).await {
+            Ok(Ok(body)) if !body.trim().is_empty() => {
+                return Ok((model.clone(), body.trim().to_string()))
+            }
+            Ok(Ok(_)) => last_error = format!("{model} returned an empty rewrite"),
+            Ok(Err(err)) => last_error = err,
+            Err(_) => last_error = format!("{model} took longer than three minutes"),
+        }
+    }
+    Err(last_error)
+}
+
+async fn stream_once(
+    app: &AppHandle,
+    key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    index: usize,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Message<'a> {
+        role: &'a str,
+        content: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct Body<'a> {
+        model: &'a str,
+        messages: Vec<Message<'a>>,
+        stream: bool,
+        temperature: f32,
+    }
+
+    let body = Body {
+        model,
+        messages: vec![
+            Message {
+                role: "system",
+                content: system,
+            },
+            Message {
+                role: "user",
+                content: user,
+            },
+        ],
+        stream: true,
+        temperature: 0.5,
+    };
+
+    let response = http::client()?
+        .post(format!("{API}/chat/completions"))
+        .bearer_auth(key)
+        // OpenRouter uses these for attribution; they cost nothing and are honest.
+        .header("HTTP-Referer", "https://github.com/emrisca/quillnot")
+        .header("X-Title", "QuillNot")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach OpenRouter: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_string());
+        let body = response.text().await.unwrap_or_default();
+
+        return Err(match status.as_u16() {
+            429 => match retry_after {
+                Some(seconds) => format!("{model} is rate limited right now (retry after {seconds}s)."),
+                None => format!("{model} is rate limited right now."),
+            },
+            401 | 403 => "OpenRouter rejected the key — reconnect the account in Settings.".to_string(),
+            404 => format!("{model} is not available on this account."),
+            _ => format!("OpenRouter answered {status}: {}", http::clip(&body)),
+        });
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut pending = String::new();
+    let mut out = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("the reply stopped early: {e}"))?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(end) = pending.find("\n\n") {
+            let event: String = pending.drain(..end + 2).collect();
+            for line in event.lines() {
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let payload = payload.trim();
+                if payload == "[DONE]" {
+                    return Ok(out);
+                }
+                let Ok(parsed) = serde_json::from_str::<CompletionChunk>(payload) else {
+                    continue;
+                };
+                if let Some(message) = parsed.error {
+                    return Err(format!("{model}: {}", http::clip(&message.message)));
+                }
+                if let Some(delta) = parsed
+                    .choices
+                    .into_iter()
+                    .next()
+                    .and_then(|choice| choice.delta.content)
+                {
+                    out.push_str(&delta);
+                    let _ = app.emit(
+                        DELTA_EVENT,
+                        Delta {
+                            block: index,
+                            text: delta,
+                            model: model.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+struct CompletionChunk {
+    #[serde(default)]
+    choices: Vec<ChunkChoice>,
+    #[serde(default)]
+    error: Option<ChunkError>,
+}
+
+#[derive(Deserialize)]
+struct ChunkChoice {
+    #[serde(default)]
+    delta: ChunkDelta,
+}
+
+#[derive(Deserialize, Default)]
+struct ChunkDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChunkError {
+    #[serde(default)]
+    message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_query_parameter_is_found_and_decoded() {
+        assert_eq!(
+            query_param("/callback?code=abc123&state=xyz", "code"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            query_param("/callback?code=a%2Bb%20c", "code"),
+            Some("a+b c".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missing_parameter_is_none() {
+        assert_eq!(query_param("/callback", "code"), None);
+        assert_eq!(query_param("/callback?state=x", "code"), None);
+    }
+
+    #[test]
+    fn pkce_challenge_is_the_base64url_of_the_sha256() {
+        // The RFC 7636 appendix B vector.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            pkce_challenge(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn a_streamed_delta_is_read_out_of_the_sse_frame() {
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\r\n\r\n";
+        let payload = frame
+            .lines()
+            .find_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .expect("a data line");
+        let parsed: CompletionChunk = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            parsed.choices.into_iter().next().unwrap().delta.content,
+            Some("Hel".to_string())
+        );
+    }
+
+    #[test]
+    fn an_error_frame_is_recognised() {
+        let parsed: CompletionChunk =
+            serde_json::from_str("{\"error\":{\"message\":\"no credits\"}}").unwrap();
+        assert_eq!(parsed.error.unwrap().message, "no credits");
+    }
+}

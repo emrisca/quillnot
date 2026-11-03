@@ -216,6 +216,12 @@ button:disabled {
   color: #8a6d1f;
 }
 
+.pill--live {
+  border-color: #c3e0b8;
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+
 /* -------------------------------------------------------------- the workspace */
 
 .workspace {
@@ -865,6 +871,108 @@ button:disabled {
   text-align: center;
 }
 
+/* ------------------------------------------------------------- account card */
+
+.card__state {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusdot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c3cac2;
+  margin-left: 2px;
+}
+
+.statusdot.is-on {
+  background: var(--green);
+}
+
+.setrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.input {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf9;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.btn--quiet {
+  background: #f1f4ef;
+  color: var(--ink-soft);
+  box-shadow: none;
+}
+
+.btn--quiet:hover:not(:disabled) {
+  background: #e6ece3;
+}
+
+.muted-note {
+  flex: 1 1 240px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.errline {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid #f0cfc8;
+  border-radius: 9px;
+  background: #fdf1ee;
+  color: #8c3527;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.errline svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+/* The model that answered, next to the pane's own label, once a run has finished. */
+.modelchip {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f1f4ef;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: 1px;
+}
+
 /* ---------------------------------------------------------------- small view */
 
 @media (max-width: 1000px) {
@@ -932,6 +1040,18 @@ button:disabled {
 
   .modebar__lang {
     background: #1b1f1b;
+  }
+
+  .input,
+  .btn--quiet,
+  .modelchip {
+    background: #242a24;
+  }
+
+  .errline {
+    border-color: #5a3228;
+    background: #2c1d1a;
+    color: #e6a99c;
   }
 
   .issue {

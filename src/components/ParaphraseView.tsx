@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../icons";
+import { isDesktop, onDelta, paraphrase } from "../lib/openrouter";
+import { useConnection } from "../lib/connection";
 import { diffWords } from "../lib/diff";
 import { mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
 import { countWords } from "../lib/text";
@@ -20,15 +22,19 @@ const RAIL = [
 ] as const;
 
 export function ParaphraseView() {
+  const connection = useConnection();
   const [mode, setMode] = useState<Mode>("standard");
   const [strength, setStrength] = useState(2);
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
+  const [model, setModel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(true);
   const [copied, setCopied] = useState(false);
   const [tipOpen, setTipOpen] = useState(true);
 
+  const live = isDesktop() && connection.connected;
   const pieces = useMemo(() => (output ? diffWords(input, output) : null), [input, output]);
   const inWords = countWords(input);
   const outWords = countWords(output);
@@ -36,9 +42,34 @@ export function ParaphraseView() {
   async function run() {
     if (!input.trim() || busy) return;
     setBusy(true);
+    setError(null);
     setCopied(false);
+
     try {
-      setOutput(await mockParaphrase(input, mode, strength));
+      if (!live) {
+        setOutput(await mockParaphrase(input, mode, strength));
+        setModel(null);
+        return;
+      }
+
+      // Stream first, settle on the command's result: the deltas make the pane feel
+      // alive, the reply is the authority on what the text finally is.
+      setOutput("");
+      setModel(null);
+      let buffer = "";
+      const unlisten = await onDelta((delta) => {
+        buffer += delta.text;
+        setOutput(buffer);
+      });
+      try {
+        const result = await paraphrase({ text: input, mode, strength });
+        setOutput(result.text);
+        setModel(result.model);
+      } finally {
+        unlisten();
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(false);
     }
@@ -47,6 +78,8 @@ export function ParaphraseView() {
   function clearAll() {
     setInput("");
     setOutput("");
+    setError(null);
+    setModel(null);
   }
 
   async function copy() {
@@ -103,6 +136,7 @@ export function ParaphraseView() {
             <header className="pane__head">
               <span className="pane__label">
                 Paraphrased · {modeLabel(mode)}
+                {model ? <span className="modelchip">{model}</span> : null}
               </span>
               <div className="pane__actions">
                 <button
@@ -121,6 +155,13 @@ export function ParaphraseView() {
             </header>
 
             <div className="pane__body">
+              {error ? (
+                <p className="errline">
+                  <Icon name="warning" size={14} />
+                  <span>{error}</span>
+                </p>
+              ) : null}
+
               {output && pieces ? (
                 pieces.after.map((piece, index) =>
                   piece.changed && highlight ? (
@@ -131,9 +172,13 @@ export function ParaphraseView() {
                     <span key={index}>{piece.text}</span>
                   ),
                 )
+              ) : output ? (
+                <span>{output}</span>
               ) : (
                 <p className="empty">
-                  Your rewrite appears here. Nothing leaves this machine until you add an OpenRouter key in Settings.
+                  {live
+                    ? "Your rewrite appears here, streamed from the model as it is written."
+                    : "Your rewrite appears here. Connect an OpenRouter account in Settings and this pane streams from a free model instead."}
                 </p>
               )}
             </div>
@@ -142,7 +187,9 @@ export function ParaphraseView() {
               <span className="count">
                 {outWords} {outWords === 1 ? "word" : "words"}
               </span>
-              <span className="count count--soft">{busy ? "working…" : output ? "tap a highlighted phrase · copy to keep" : "⌘↩ to run"}</span>
+              <span className="count count--soft">
+                {busy ? "streaming…" : output ? "⌘C copies · Changes highlights the diff" : "⌘↩ to run"}
+              </span>
             </footer>
           </section>
 
