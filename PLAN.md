@@ -88,6 +88,14 @@ lines are preserved: the splitter emits blocks, each block is rewritten on its o
 blocks are rejoined. Otherwise a paraphrase of an essay arrives as one wall of text, which is
 the single most common complaint about every one of these tools.
 
+**Providers, not just OpenRouter.** Every free tier worth using is OpenAI-compatible, so the
+client takes a base URL, a key and a model id instead of assuming one vendor. Settings lists
+them, each key in its own keychain entry, one of them active: that provider answers every
+rewrite, and when it refuses, the block falls through to OpenRouter's free router. The idea is
+FreeLLMAPI's (`github.com/tashfeenahmed/freellmapi`) without its middleman — no local router
+process, no unified bearer token, no encrypted key database. Requests go from this app to the
+provider, and model ids are editable per provider because they change faster than releases.
+
 **Local history, stored in the app's own data directory** — never in the repo, never uploaded.
 Each run stores the original, the result, the mode, the model and the token counts, so the
 statistics view is real numbers rather than decoration. Those same rows are what the ranking in

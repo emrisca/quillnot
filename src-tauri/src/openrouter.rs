@@ -1,5 +1,9 @@
 //! The OpenRouter client: sign-in, and the streaming rewrite.
 //!
+//! The rewrite is provider-agnostic — base URL, key and model come from
+//! [`crate::providers`] — but OpenRouter is the one that offers a hand-rolled OAuth
+//! flow, so it stays the reference implementation here.
+//!
 //! Two things live here. The OAuth PKCE flow (no key is ever typed by hand unless
 //! someone wants to) and the completion call the workspace actually makes.
 //!
@@ -22,14 +26,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::prompt;
+use crate::providers;
 use crate::store;
 use crate::DELTA_EVENT;
 
 const API: &str = "https://openrouter.ai/api/v1";
-
-/// Used when nobody has pinned a model. The gateway's own free router, so the first
-/// run has something sensible to call before M7 scores the catalogue.
-pub const FALLBACK_MODEL: &str = "openrouter/free";
 
 /// How long one block may take before we give up on that model. Free models can be
 /// slow, but a stream that has not finished in three minutes is not going to.
@@ -127,7 +128,10 @@ pub async fn sign_in() -> Result<crate::KeyStatus, String> {
         })??;
 
     let key = exchange_code(&code, &verifier).await?;
+    // Both entries: the legacy one the header badge has always read, and the
+    // per-provider one the provider list reads.
     store::save_key(&key)?;
+    store::save_key_for("openrouter", &key)?;
     Ok(store::key_status())
 }
 
@@ -269,7 +273,7 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(url)
         .spawn()
@@ -278,7 +282,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     // The empty argument after `start` is the window title; without it a URL
     // containing an ampersand would be read as a command separator.
     std::process::Command::new("cmd")
@@ -290,7 +294,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     std::process::Command::new("xdg-open")
         .arg(url)
         .spawn()
@@ -338,26 +342,27 @@ pub async fn paraphrase_with(
     app: Option<&AppHandle>,
     request: ParaphraseRequest,
 ) -> Result<ParaphraseResult, String> {
-    let key = store::load_key()
-        .ok_or_else(|| "Connect an OpenRouter account in Settings first.".to_string())?;
-
     let text = request.text.trim();
     if text.is_empty() {
         return Err("There is nothing to paraphrase.".to_string());
     }
 
+    // Whichever provider is active in Settings answers this: its base URL, its key,
+    // its model. The failover chain is built in `providers`, so a free tier that is
+    // rate limited hands the block to the next one instead of ending the run.
+    let route = match app {
+        Some(handle) => providers::resolve(handle, request.model.clone())?,
+        None => providers::resolve_headless(request.model.clone())?,
+    };
+
     let mode = request.mode.unwrap_or_else(|| "standard".to_string());
     let strength = request.strength.unwrap_or(2).clamp(1, 4);
-    let preferred = request
-        .model
-        .or_else(|| app.and_then(|handle| store::read_settings(handle).default_model))
-        .unwrap_or_else(|| FALLBACK_MODEL.to_string());
 
     // 2,500 rather than 4,000 characters per block: the free models stall far less
     // often on a smaller prompt, and a failed block costs a fraction of the time.
     let blocks = prompt::split_blocks(text, 2500);
     let mut rewritten: Vec<String> = Vec::with_capacity(blocks.len());
-    let mut used = preferred.clone();
+    let mut used = route.model.clone();
 
     for (index, block) in blocks.iter().enumerate() {
         // The separator is emitted as a delta too, so the pane grows exactly as the
@@ -376,7 +381,7 @@ pub async fn paraphrase_with(
         }
 
         let (system, user) = prompt::paraphrase_prompt(block, &mode, strength);
-        let (model, body) = stream_block(app, index, &key, &preferred, &system, &user).await?;
+        let (model, body) = stream_block(app, index, &route.attempts, &system, &user).await?;
         used = model;
         rewritten.push(body);
     }
@@ -394,22 +399,17 @@ pub async fn paraphrase_with(
 pub async fn stream_block(
     app: Option<&AppHandle>,
     index: usize,
-    key: &str,
-    preferred: &str,
+    attempts: &[providers::Attempt],
     system: &str,
     user: &str,
 ) -> Result<(String, String), String> {
-    let mut candidates = vec![preferred.to_string()];
-    if preferred != FALLBACK_MODEL {
-        candidates.push(FALLBACK_MODEL.to_string());
-    }
-
     let mut last_error = String::new();
-    for (attempt, model) in candidates.iter().enumerate() {
-        if attempt > 0 {
+    for (attempt_index, attempt) in attempts.iter().enumerate() {
+        if attempt_index > 0 {
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
 
+        let model = attempt.model.clone();
         let mut sink = |piece: &str| {
             if let Some(handle) = app {
                 let _ = handle.emit(
@@ -423,15 +423,10 @@ pub async fn stream_block(
             }
         };
 
-        match tokio::time::timeout(
-            BLOCK_TIMEOUT,
-            stream_once(key, model, system, user, &mut sink),
-        )
-        .await
+        match tokio::time::timeout(BLOCK_TIMEOUT, stream_once(attempt, system, user, &mut sink))
+            .await
         {
-            Ok(Ok(body)) if !body.trim().is_empty() => {
-                return Ok((model.clone(), body.trim().to_string()))
-            }
+            Ok(Ok(body)) if !body.trim().is_empty() => return Ok((model, body.trim().to_string())),
             Ok(Ok(_)) => last_error = format!("{model} returned an empty rewrite"),
             Ok(Err(err)) => last_error = err,
             Err(_) => last_error = format!("{model} took longer than three minutes"),
@@ -440,9 +435,21 @@ pub async fn stream_block(
     Err(last_error)
 }
 
+/// `api.groq.com` out of `https://api.groq.com/openai/v1`, for error messages that
+/// name the thing that actually refused.
+fn host_of(base_url: &str) -> String {
+    base_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split('/')
+        .next()
+        .unwrap_or(base_url)
+        .to_string()
+}
+
 async fn stream_once(
-    key: &str,
-    model: &str,
+    attempt: &providers::Attempt,
     system: &str,
     user: &str,
     // `+ Send` because a Tauri command's future must be `Send`, and this sink is
@@ -464,6 +471,7 @@ async fn stream_once(
         temperature: f32,
     }
 
+    let model = attempt.model.as_str();
     let body = Body {
         model,
         messages: vec![
@@ -480,16 +488,30 @@ async fn stream_once(
         temperature: 0.5,
     };
 
-    let response = http::client()?
-        .post(format!("{API}/chat/completions"))
-        .bearer_auth(key)
+    let host = host_of(&attempt.base_url);
+    let mut outgoing = http::client()?
+        .post(format!(
+            "{}/chat/completions",
+            attempt.base_url.trim_end_matches('/')
+        ))
+        .json(&body);
+
+    // A local server usually takes no Authorization header at all, which is the one
+    // real difference between "bring your own endpoint" and a hosted free tier.
+    if let Some(key) = attempt.key.as_deref() {
+        outgoing = outgoing.bearer_auth(key);
+    }
+    if attempt.openrouter {
         // OpenRouter uses these for attribution; they cost nothing and are honest.
-        .header("HTTP-Referer", "https://github.com/emrisca/quillnot")
-        .header("X-Title", "QuillNot")
-        .json(&body)
+        outgoing = outgoing
+            .header("HTTP-Referer", "https://github.com/emrisca/quillnot")
+            .header("X-Title", "QuillNot");
+    }
+
+    let response = outgoing
         .send()
         .await
-        .map_err(|e| format!("could not reach OpenRouter: {e}"))?;
+        .map_err(|e| format!("could not reach {host}: {e}"))?;
 
     let status = response.status();
     if !status.is_success() {
@@ -505,9 +527,9 @@ async fn stream_once(
                 Some(seconds) => format!("{model} is rate limited right now (retry after {seconds}s)."),
                 None => format!("{model} is rate limited right now."),
             },
-            401 | 403 => "OpenRouter rejected the key — reconnect the account in Settings.".to_string(),
+            401 | 403 => format!("{host} rejected the key — check it in Settings."),
             404 => format!("{model} is not available on this account."),
-            _ => format!("OpenRouter answered {status}: {}", http::clip(&body)),
+            _ => format!("{host} answered {status}: {}", http::clip(&body)),
         });
     }
 

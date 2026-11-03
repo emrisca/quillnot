@@ -1,12 +1,14 @@
 //! The Rust half of QuillNot.
 //!
-//! Everything that touches the network or the OS lives here, because the key that
-//! pays for the requests must never be reachable from the webview:
+//! Everything that touches the network or the OS lives here, because the keys that
+//! pay for the requests must never be reachable from the webview:
 //!
-//! - [`store`] — the API key in the OS keychain, settings and the catalogue cache
-//!   in the app's data directory;
+//! - [`store`] — per-provider API keys in the OS keychain, settings and the catalogue
+//!   cache in the app's data directory;
+//! - [`providers`] — the registry of free-tier providers, which one is active, and the
+//!   failover chain when it refuses;
 //! - [`catalog`] — every zero-priced model OpenRouter serves, plus the per-provider
-//!   uptime/latency/throughput rows the ranking in M7 is built from;
+//!   uptime/latency/throughput rows the ranking is built from;
 //! - [`openrouter`] — OAuth PKCE sign-in over a loopback callback, and the chunked,
 //!   streaming completion the workspace calls;
 //! - [`prompt`] — the mode instructions and the block splitter.
@@ -14,6 +16,7 @@
 mod catalog;
 mod openrouter;
 mod prompt;
+mod providers;
 pub mod self_test;
 mod store;
 
@@ -21,6 +24,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 use openrouter::{ParaphraseRequest, ParaphraseResult};
+use providers::ProviderStatus;
 
 /// What the UI needs to know about the account: whether one is connected, and a
 /// hint that is *not* the key. The frontend never receives the secret itself.
@@ -32,8 +36,8 @@ pub struct KeyStatus {
 }
 
 #[tauri::command]
-fn key_status() -> KeyStatus {
-    store::key_status()
+fn key_status(app: AppHandle) -> KeyStatus {
+    store::active_status(&app)
 }
 
 #[tauri::command]
@@ -43,6 +47,7 @@ fn save_key(key: String) -> Result<KeyStatus, String> {
         return Err("That does not look like an OpenRouter key: they start with sk-or-.".into());
     }
     store::save_key(&key)?;
+    store::save_key_for("openrouter", &key)?;
     Ok(store::key_status())
 }
 
@@ -79,6 +84,89 @@ async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<Paraph
     openrouter::paraphrase(app.clone(), request).await
 }
 
+/* ---------------------------------------------------------------- providers */
+
+#[tauri::command]
+fn list_providers(app: AppHandle) -> Vec<ProviderStatus> {
+    providers::statuses(&app)
+}
+
+#[tauri::command]
+fn save_provider_key(app: AppHandle, provider: String, key: String) -> Result<Vec<ProviderStatus>, String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("Paste the key first.".into());
+    }
+    if let Some(info) = providers::get(&provider) {
+        if let Some(prefix) = info.key_prefix {
+            if !key.starts_with(prefix) {
+                return Err(format!("{} keys start with “{prefix}”.", info.label));
+            }
+        }
+    }
+    store::save_key_for(&provider, &key)?;
+    Ok(providers::statuses(&app))
+}
+
+#[tauri::command]
+fn clear_provider_key(app: AppHandle, provider: String) -> Result<Vec<ProviderStatus>, String> {
+    store::clear_key_for(&provider)?;
+    Ok(providers::statuses(&app))
+}
+
+#[tauri::command]
+fn set_active_provider(app: AppHandle, provider: String) -> Result<Vec<ProviderStatus>, String> {
+    if providers::get(&provider).is_none() {
+        return Err(format!("Unknown provider “{provider}”."));
+    }
+    let mut settings = store::read_settings(&app);
+    settings.active_provider = Some(provider);
+    store::write_settings(&app, &settings)?;
+    Ok(providers::statuses(&app))
+}
+
+#[tauri::command]
+fn set_provider_model(app: AppHandle, provider: String, model: String) -> Result<Vec<ProviderStatus>, String> {
+    let mut settings = store::read_settings(&app);
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        settings.provider_models.remove(&provider);
+    } else {
+        settings.provider_models.insert(provider, model);
+    }
+    store::write_settings(&app, &settings)?;
+    Ok(providers::statuses(&app))
+}
+
+#[tauri::command]
+fn set_custom_endpoint(app: AppHandle, base_url: String, model: String) -> Result<Vec<ProviderStatus>, String> {
+    let base_url = base_url.trim().to_string();
+    if !base_url.is_empty() && !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        return Err("The base URL has to start with http:// or https://.".into());
+    }
+
+    let mut settings = store::read_settings(&app);
+    settings.custom_base_url = if base_url.is_empty() { None } else { Some(base_url) };
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        settings.provider_models.remove("custom");
+    } else {
+        settings.provider_models.insert("custom".to_string(), model);
+    }
+    store::write_settings(&app, &settings)?;
+    Ok(providers::statuses(&app))
+}
+
+/// Opens a provider's documentation in the system browser. Only https, so this cannot
+/// be turned into a way to launch arbitrary local handlers from the webview.
+#[tauri::command]
+fn open_docs(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("Only https links are opened.".into());
+    }
+    openrouter::open_browser(&url)
+}
+
 // The event the workspace listens on while a rewrite streams in. Named here so the
 // frontend and this file cannot drift: `src/lib/openrouter.ts` listens for exactly
 // this string.
@@ -95,7 +183,14 @@ pub fn run() {
             list_free_models,
             model_endpoints,
             model_catalogue,
-            paraphrase
+            paraphrase,
+            list_providers,
+            save_provider_key,
+            clear_provider_key,
+            set_active_provider,
+            set_provider_model,
+            set_custom_endpoint,
+            open_docs
         ])
         .run(tauri::generate_context!())
         .expect("error while running QuillNot");

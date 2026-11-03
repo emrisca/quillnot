@@ -871,6 +871,99 @@ button:disabled {
   text-align: center;
 }
 
+/* ------------------------------------------------------------ provider list */
+
+.prov__intro {
+  margin: 2px 0 12px;
+  max-width: 72ch;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.prov__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.prov {
+  padding: 11px 12px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--page);
+}
+
+.prov.is-active {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.prov__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prov__name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.prov__use {
+  margin-left: auto;
+}
+
+.prov__free {
+  margin: 5px 0 9px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.prov__fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.prov__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.input--flex {
+  flex: 1 1 auto;
+}
+
+.prov__key {
+  flex: 1 1 auto;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.prov__note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.linkbtn {
+  font-size: 11.5px;
+  color: var(--green-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* -------------------------------------------------------------- models view */
 
 .mpage {

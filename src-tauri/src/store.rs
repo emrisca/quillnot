@@ -1,10 +1,11 @@
-//! The API key, the settings file and the catalogue cache.
+//! The API keys, the settings file and the catalogue cache.
 //!
-//! The key goes to the OS keychain — Keychain on macOS, Credential Manager on
-//! Windows — and is never written to disk by this app. Settings and the cached
-//! model list live under the app's data directory, which is where M4's history
-//! will go as well.
+//! Keys go to the OS keychain — Keychain on macOS, Credential Manager on Windows —
+//! one entry per provider, and are never written to disk by this app. Settings and
+//! the cached model list live under the app's data directory, which is where M4's
+//! history will go as well.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -12,8 +13,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::KeyStatus;
 
+/// The OpenRouter entry as it existed before the provider list; kept so a key stored
+/// by an earlier build keeps working.
 const SERVICE: &str = "dev.emrys.quillnot.openrouter";
 const ACCOUNT: &str = "api-key";
+/// Everything added by the provider list, one entry per provider id.
+const PROVIDER_SERVICE: &str = "dev.emrys.quillnot.provider";
 const SETTINGS_FILE: &str = "settings.json";
 const MODELS_CACHE: &str = "catalog-models.json";
 
@@ -21,10 +26,22 @@ const MODELS_CACHE: &str = "catalog-models.json";
 #[serde(default)]
 pub struct Settings {
     pub default_model: Option<String>,
+    /// Which provider answers a rewrite. Absent means OpenRouter.
+    pub active_provider: Option<String>,
+    /// Per-provider model choice, so a provider whose ids move can be corrected
+    /// without a new release.
+    pub provider_models: BTreeMap<String, String>,
+    /// Base URL for the "bring your own endpoint" provider.
+    pub custom_base_url: Option<String>,
 }
 
-fn entry() -> Result<keyring::Entry, String> {
+fn legacy_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| format!("the OS key store is unavailable: {e}"))
+}
+
+fn entry_for(provider: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(PROVIDER_SERVICE, provider)
+        .map_err(|e| format!("the OS key store is unavailable: {e}"))
 }
 
 pub fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -33,8 +50,44 @@ pub fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The key for one provider, falling back to the entry an earlier build wrote for
+/// OpenRouter so nobody has to sign in twice across an update.
+pub fn load_key_for(provider: &str) -> Option<String> {
+    if let Ok(entry) = entry_for(provider) {
+        if let Ok(key) = entry.get_password() {
+            if !key.trim().is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    if provider == "openrouter" {
+        return load_key();
+    }
+    None
+}
+
+pub fn save_key_for(provider: &str, key: &str) -> Result<(), String> {
+    entry_for(provider)?
+        .set_password(key)
+        .map_err(|e| format!("could not write the key to the OS key store: {e}"))
+}
+
+pub fn clear_key_for(provider: &str) -> Result<(), String> {
+    match entry_for(provider)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(err) => return Err(format!("could not remove the stored key: {err}")),
+    }
+    if provider == "openrouter" {
+        // The pre-provider entry would otherwise resurrect the old key.
+        clear_key()?;
+    }
+    Ok(())
+}
+
+/* ------------------------------------------------------- the OpenRouter entry */
+
 pub fn load_key() -> Option<String> {
-    let entry = entry().ok()?;
+    let entry = legacy_entry().ok()?;
     match entry.get_password() {
         Ok(key) if !key.trim().is_empty() => Some(key),
         _ => None,
@@ -42,13 +95,13 @@ pub fn load_key() -> Option<String> {
 }
 
 pub fn save_key(key: &str) -> Result<(), String> {
-    entry()?
+    legacy_entry()?
         .set_password(key)
         .map_err(|e| format!("could not write the key to the OS key store: {e}"))
 }
 
 pub fn clear_key() -> Result<(), String> {
-    match entry()?.delete_credential() {
+    match legacy_entry()?.delete_credential() {
         Ok(()) => Ok(()),
         // Nothing stored is the state we wanted anyway.
         Err(keyring::Error::NoEntry) => Ok(()),
@@ -80,12 +133,43 @@ pub fn key_status() -> KeyStatus {
     }
 }
 
+/// The header badge: is the provider that will answer a rewrite connected?
+pub fn active_status(app: &AppHandle) -> KeyStatus {
+    let settings = read_settings(app);
+    let provider = settings
+        .active_provider
+        .unwrap_or_else(|| crate::providers::DEFAULT_PROVIDER.to_string());
+
+    match crate::providers::get(&provider) {
+        Some(info) if !info.needs_key => KeyStatus {
+            connected: true,
+            hint: Some(info.label.to_string()),
+        },
+        _ => match load_key_for(&provider) {
+            Some(key) => KeyStatus {
+                connected: true,
+                hint: Some(hint(&key)),
+            },
+            None => KeyStatus {
+                connected: false,
+                hint: None,
+            },
+        },
+    }
+}
+
 pub fn read_settings(app: &AppHandle) -> Settings {
     data_dir(app)
         .ok()
         .and_then(|dir| std::fs::read(dir.join(SETTINGS_FILE)).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+pub fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let path = data_dir(app)?.join(SETTINGS_FILE);
+    let bytes = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
 /// Where the last good model list is kept so the picker works without a network.
@@ -117,12 +201,16 @@ mod tests {
     #[test]
     #[ignore = "touches the real OS key store"]
     fn the_os_key_store_is_available() {
-        let entry = super::entry().expect("a key store backend is compiled in");
-        // Reading an item that does not exist must report absence, not break the
-        // store — the app asks this on every launch.
-        match entry.get_password() {
-            Ok(_) | Err(keyring::Error::NoEntry) => {}
-            Err(other) => panic!("unexpected key store error: {other}"),
+        for entry in [
+            super::legacy_entry().expect("a key store backend is compiled in"),
+            super::entry_for("openrouter").expect("a key store backend is compiled in"),
+        ] {
+            // Reading an item that does not exist must report absence, not break the
+            // store — the app asks this on every launch.
+            match entry.get_password() {
+                Ok(_) | Err(keyring::Error::NoEntry) => {}
+                Err(other) => panic!("unexpected key store error: {other}"),
+            }
         }
     }
 }

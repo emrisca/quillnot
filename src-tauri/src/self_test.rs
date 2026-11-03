@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use crate::{catalog, openrouter, prompt, store};
+use crate::{catalog, openrouter, prompt, providers, store};
 
 const SAMPLE: &str =
     "The library is very important for the team, and it shows a lot of promise for the next release.";
@@ -101,16 +101,24 @@ pub fn run() -> i32 {
         // Bounded here as well as inside the client: a bad model id must not hold the
         // whole run open for the full three-minute block budget.
         let started = Instant::now();
+        let base_url = "https://openrouter.ai/api/v1".to_string();
+        let chain = [
+            providers::Attempt {
+                base_url: base_url.clone(),
+                key: Some(key.clone()),
+                model: "definitely-not-a-real-model:free".to_string(),
+                openrouter: true,
+            },
+            providers::Attempt {
+                base_url,
+                key: Some(key),
+                model: "openrouter/free".to_string(),
+                openrouter: true,
+            },
+        ];
         let attempt = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            openrouter::stream_block(
-                None,
-                0,
-                &key,
-                "definitely-not-a-real-model:free",
-                &system,
-                &user,
-            ),
+            openrouter::stream_block(None, 0, &chain, &system, &user),
         )
         .await;
 
