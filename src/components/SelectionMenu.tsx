@@ -74,7 +74,7 @@ export function SelectionMenu({
           {synonyms === null ? (
             <p className="selmenu__note">Looking for alternatives…</p>
           ) : synonyms.length === 0 ? (
-            <p className="selmenu__note">No alternatives for “{word}”.</p>
+            <p className="selmenu__note">No alternatives for "{word}".</p>
           ) : (
             <ul className="selmenu__words">
               <li>

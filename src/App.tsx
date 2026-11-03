@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { GrammarView } from "./components/GrammarView";
+import { HumanizerView } from "./components/HumanizerView";
 import { HistoryView } from "./components/HistoryView";
 import { ModelsView } from "./components/ModelsView";
 import { ParaphraseView } from "./components/ParaphraseView";
@@ -94,6 +95,7 @@ export default function App() {
           <>
             {tool === "paraphraser" ? <ParaphraseView onOpen={setView} /> : null}
             {tool === "grammar" ? <GrammarView onOpen={setView} /> : null}
+            {tool === "humanizer" ? <HumanizerView /> : null}
             {tool === "typer" ? <TyperView /> : null}
             {tool === "models" ? <ModelsView /> : null}
             {tool === "settings" ? <SettingsView onOpen={setView} /> : null}

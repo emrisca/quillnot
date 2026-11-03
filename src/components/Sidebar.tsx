@@ -16,7 +16,7 @@ export function Sidebar({ active, onSelect }: Props) {
         type="button"
         className={className}
         aria-current={isActive ? "page" : undefined}
-        title={item.soon ? `${item.label} — a later milestone` : item.label}
+        title={item.soon ? `${item.label} (a later milestone)` : item.label}
         onClick={() => {
           if (item.tool) onSelect(item.tool);
         }}

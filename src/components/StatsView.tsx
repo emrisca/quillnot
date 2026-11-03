@@ -51,7 +51,7 @@ export function StatsView({ onClose }: { onClose: () => void }) {
         ) : stats === null ? (
           <p className="empty">Counting…</p>
         ) : stats.runs === 0 ? (
-          <p className="empty">No runs yet — the numbers start with the first rewrite.</p>
+          <p className="empty">No runs yet. The numbers start with the first rewrite.</p>
         ) : (
           <>
             <div className="tiles">

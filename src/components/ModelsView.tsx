@@ -151,13 +151,14 @@ export function ModelsView() {
             ) : null}
           </h2>
           <p className="mpage__note">
-            Scored for the task you pick, from two sources: what OpenRouter reports — uptime
-            from the most recent window that says anything, latency and throughput over 30
-            minutes — and every call this app has made, timed per model and per task. Our
-            numbers outweigh the platform's as they accumulate, and three failures in a row
-            demote a model until it answers again. A dash is no evidence, never zero. Until
-            this app has called a model for a task, Auto has nothing to go on and leaves the
-            run to the gateway router rather than picking whichever id sorts first.
+            Scored for the task you pick, from two sources. One is what OpenRouter reports:
+            uptime from the most recent window that says anything, plus latency and
+            throughput over 30 minutes. The other is every call this app has made, timed per
+            model and per task. Our numbers outweigh the platform's as they accumulate, and
+            three failures in a row demote a model until it answers again. A dash means no
+            evidence, never zero. Until this app has called a model for a task, Auto has
+            nothing to go on and leaves the run to the gateway router rather than picking
+            whichever id sorts first.
           </p>
         </div>
         <button
@@ -200,12 +201,12 @@ export function ModelsView() {
             {catalogue === null
               ? "Reading the ranking…"
               : catalogue.pinned
-                ? `pinned to ${catalogue.pinned} — Auto is set aside`
+                ? `pinned to ${catalogue.pinned}, so Auto is set aside`
                 : catalogue.auto
                   ? catalogue.autoChoice
                     ? `would send this task to ${catalogue.autoChoice}`
-                    : "nothing measured yet — your provider's configured model answers"
-                  : "off — your provider's configured model answers"}
+                    : "nothing measured yet, so your provider's configured model answers"
+                  : "off, so your provider's configured model answers"}
           </span>
         </div>
       </div>
@@ -321,7 +322,7 @@ export function ModelsView() {
           </table>
         ) : catalogue ? (
           <p className="empty" style={{ padding: "18px" }}>
-            No zero-priced text models came back. That is unusual — refresh in a moment.
+            No zero-priced text models came back. That is unusual. Refresh in a moment.
           </p>
         ) : null}
       </div>

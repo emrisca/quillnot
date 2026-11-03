@@ -1,6 +1,6 @@
 [package]
 name = "quillnot"
-version = "0.2.1"
+version = "0.2.2"
 description = "A desktop paraphrasing and grammar-checking workspace on OpenRouter's free models"
 license = "MIT"
 edition = "2021"
@@ -41,11 +41,19 @@ base64 = "0.22"
 # signed by anyone else is refused before it replaces this one.
 tauri-plugin-updater = "2"
 
+# Typer's stop chord. Escape only reaches the app while this window has focus, which is
+# exactly what a run takes away from it, so the panic button is registered with the OS
+# instead. Rust owns the shortcut; the webview is never granted its API.
+tauri-plugin-global-shortcut = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Typer's Windows injector: `SendInput` with `KEYEVENTF_UNICODE`, so the character is what
+# is typed rather than whatever the active keyboard layout makes of a virtual key.
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

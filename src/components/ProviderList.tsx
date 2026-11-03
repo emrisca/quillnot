@@ -49,7 +49,10 @@ export function ProviderList() {
     void refreshStatus();
   }
 
-  const connected = rows?.filter((row) => row.connected).length ?? 0;
+  // Counted from the stored keys, not from "can be used": a local endpoint needs no key,
+  // so it is usable on a fresh install, and counting that as connected would report an
+  // account nobody added.
+  const connected = rows?.filter((row) => row.hint !== null).length ?? 0;
   const active = rows?.find((row) => row.active);
 
   return (
@@ -83,8 +86,8 @@ export function ProviderList() {
 
       {!isDesktop() ? (
         <p className="muted-note">
-          Run the app (npm run tauri dev) to manage providers — a browser tab cannot
-          hold a keychain entry.
+          Run the app (npm run tauri dev) to manage providers. A browser tab cannot hold a
+          keychain entry.
         </p>
       ) : rows === null ? null : (
         <div className="prov__list">

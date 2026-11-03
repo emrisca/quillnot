@@ -31,10 +31,10 @@ const LABELS: Record<ToneId, string> = {
 };
 
 const NOTES: Record<ToneId, string> = {
-  formal: "Long words and no contractions — this reads like a document.",
+  formal: "Long words and no contractions, so this reads like a document.",
   confident: "The text commits to what it says instead of softening it.",
   tentative: "Hedges leave the writer room to be wrong.",
-  casual: "Contractions and everyday words — this reads like speech.",
+  casual: "Contractions and everyday words. This reads like speech.",
   warm: "It thanks and includes the reader rather than reporting at them.",
   neutral: "Nothing strongly marked either way: plain, even prose.",
 };

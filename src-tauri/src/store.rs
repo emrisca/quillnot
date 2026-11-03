@@ -40,6 +40,12 @@ pub struct Settings {
     pub auto_model: Option<bool>,
     /// A model pinned from the AI Models table. A pin beats Auto.
     pub pinned_model: Option<String>,
+    /// The humanizer's skill text, as the person last left it. The request bundles this
+    /// verbatim, which is why its edits have to survive a restart.
+    pub humanizer_skill: Option<String>,
+    /// Which preset that text started from, so the menu still shows the right entry after
+    /// the person has edited it.
+    pub humanizer_preset: Option<String>,
 }
 
 impl Settings {

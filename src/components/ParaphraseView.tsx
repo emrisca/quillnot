@@ -419,10 +419,10 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
                   {pairs.map((pair, index) => (
                     <div key={index} className={`cmp__pair${pair.changed ? " is-changed" : ""}`}>
                       <p className="cmp__cell cmp__before">
-                        {pair.before ?? <span className="cmp__gone">— dropped —</span>}
+                        {pair.before ?? <span className="cmp__gone">dropped</span>}
                       </p>
                       <p className="cmp__cell cmp__after">
-                        {pair.after ?? <span className="cmp__gone">— removed —</span>}
+                        {pair.after ?? <span className="cmp__gone">removed</span>}
                       </p>
                     </div>
                   ))}

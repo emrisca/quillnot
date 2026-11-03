@@ -154,7 +154,7 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
             <div className="row__text">
               <span className="row__label">Statistics</span>
               <span className="row__detail">
-                Words processed, runs per mode and which models answered — counted from
+                Words processed, runs per mode and which models answered, all counted from
                 the history above.
               </span>
             </div>
@@ -198,7 +198,7 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
               <span className="row__label">Version</span>
               <span className="row__detail">
                 QuillNot {version ?? "…"}. Releases come from this repository's GitHub
-                releases, and every download is checked against the release key — a build
+                releases, and every download is checked against the release key, so a build
                 signed by anyone else is refused before it replaces this one.
               </span>
             </div>
@@ -229,7 +229,7 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
           {found ? (
             <div className="update">
               <p className="update__head">
-                Version {found.version} is available — you have {found.currentVersion}.
+                Version {found.version} is available. You have {found.currentVersion}.
               </p>
               {found.notes ? <pre className="update__notes">{found.notes}</pre> : null}
               <div className="update__actions">

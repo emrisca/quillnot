@@ -2,7 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isDesktop } from "./openrouter";
 
-export type TyperStatus = "idle" | "typing" | "paused" | "done" | "stopped" | "blocked";
+export type TyperStatus =
+  | "idle"
+  | "typing"
+  | "paused"
+  | "done"
+  | "stopped"
+  | "blocked"
+  /** Stopped because QuillNot's own window had focus: the keystroke would have landed here. */
+  | "unfocused";
 
 export type TyperState = { status: TyperStatus; typed: number; total: number };
 
@@ -55,12 +63,20 @@ export async function typerStatus(): Promise<TyperState> {
 }
 
 /**
- * Whether this build can type at all. False on Windows for now, and false on macOS
- * until Accessibility has been granted, which is one and the same question to the UI.
+ * Three separate answers, because they lead to three different menus: this platform may
+ * have no injector at all (X11, for now), it may have one that needs no permission
+ * (Windows), or it may have one that is waiting on one (macOS Accessibility). `platform`
+ * names the OS so the copy can match it.
  */
-export async function typerAccessibility(): Promise<boolean> {
-  if (!isDesktop()) return false;
-  return invoke<boolean>("typer_accessibility");
+export type TyperAccess = {
+  supported: boolean;
+  granted: boolean;
+  platform: string;
+};
+
+export async function typerAccessibility(): Promise<TyperAccess> {
+  if (!isDesktop()) return { supported: false, granted: false, platform: "browser" };
+  return invoke<TyperAccess>("typer_accessibility");
 }
 
 export async function typerOpenSettings(): Promise<void> {

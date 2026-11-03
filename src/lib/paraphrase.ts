@@ -28,7 +28,7 @@ export const MODES: { id: Mode; label: string; hint: string }[] = [
   { id: "expand", label: "Expand", hint: "Adds detail and connective tissue to grow the text." },
   { id: "shorten", label: "Shorten", hint: "Cuts filler so the point arrives sooner." },
   { id: "summarize", label: "Summarize", hint: "The point in at most a third of the length, using only what is there." },
-  { id: "custom", label: "Custom", hint: "Follow your own written instruction — wired up in M2." },
+  { id: "custom", label: "Custom", hint: "A plain clarity rewrite. For your own instructions, use AI Humanizer." },
 ];
 
 export const modeLabel = (mode: Mode): string => MODES.find((m) => m.id === mode)?.label ?? mode;

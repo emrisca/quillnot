@@ -315,6 +315,10 @@ pub struct ParaphraseRequest {
     pub strength: Option<u8>,
     #[serde(default)]
     pub model: Option<String>,
+    /// A skill written by the person, bundled with every block of this run. Present
+    /// means the humanizer sent it, and the mode is then whatever the skill says.
+    #[serde(default)]
+    pub skill: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -356,7 +360,17 @@ pub async fn paraphrase_with(
         None => providers::resolve_headless(request.model.clone())?,
     };
 
-    let mode = request.mode.unwrap_or_else(|| "standard".to_string());
+    let skill = request
+        .skill
+        .map(|skill| skill.trim().to_string())
+        .filter(|skill| !skill.is_empty());
+
+    // A skill replaces the mode instructions rather than joining them: the humanizer's
+    // whole promise is that the pane shows exactly what the model is told.
+    let mode = match &skill {
+        Some(_) => "humanize".to_string(),
+        None => request.mode.unwrap_or_else(|| "standard".to_string()),
+    };
     let strength = request.strength.unwrap_or(2).clamp(1, 4);
 
     let started = std::time::Instant::now();
@@ -383,7 +397,10 @@ pub async fn paraphrase_with(
             }
         }
 
-        let (system, user) = prompt::paraphrase_prompt(block, &mode, strength);
+        let (system, user) = match skill.as_deref() {
+            Some(skill) => prompt::skill_prompt(skill, block),
+            None => prompt::paraphrase_prompt(block, &mode, strength),
+        };
         let (model, body) =
             stream_block(app, samples::PARAPHRASE, index, &route.attempts, &system, &user).await?;
         used = model;

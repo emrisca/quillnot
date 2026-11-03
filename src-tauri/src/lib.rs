@@ -167,6 +167,38 @@ fn open_data_dir(app: AppHandle) -> Result<(), String> {
     history::open_folder(&app)
 }
 
+/* ---------------------------------------------------------------- humanizer */
+
+/// What the humanizer pane needs on mount: the skill text as it was left, and which
+/// preset it came from.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Humanizer {
+    pub skill: Option<String>,
+    pub preset: Option<String>,
+}
+
+#[tauri::command]
+fn humanizer(app: AppHandle) -> Humanizer {
+    let settings = store::read_settings(&app);
+    Humanizer {
+        skill: settings.humanizer_skill,
+        preset: settings.humanizer_preset,
+    }
+}
+
+/// Remembers the skill exactly as typed. An empty skill is stored as absent, so the pane
+/// falls back to a preset instead of sending a model nothing.
+#[tauri::command]
+fn set_humanizer(app: AppHandle, skill: String, preset: String) -> Result<(), String> {
+    let mut settings = store::read_settings(&app);
+    let skill = skill.trim().to_string();
+    settings.humanizer_skill = if skill.is_empty() { None } else { Some(skill) };
+    let preset = preset.trim().to_string();
+    settings.humanizer_preset = if preset.is_empty() { None } else { Some(preset) };
+    store::write_settings(&app, &settings)
+}
+
 /// The mode the workspace opens in; `None` means Standard.
 #[tauri::command]
 fn default_mode(app: AppHandle) -> Option<String> {
@@ -276,8 +308,15 @@ pub fn run() {
         // downloaded archive stay out of the webview, which sees a version and a byte
         // count.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Typer's stop chord, registered with the OS so it arrives while another window
+        // has focus. Registered after the plugin exists, best-effort.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(updates::Pending::default())
         .manage(Typer::default())
+        .setup(|app| {
+            typer::register_stop_shortcut(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_version,
             check_update,
@@ -303,6 +342,8 @@ pub fn run() {
             open_data_dir,
             default_mode,
             set_default_mode,
+            humanizer,
+            set_humanizer,
             list_providers,
             save_provider_key,
             clear_provider_key,

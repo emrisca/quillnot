@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// `src/lib/typer.ts` listens for exactly this string.
 pub const TYPER_EVENT: &str = "typer:state";
@@ -261,6 +261,9 @@ enum Status {
     Done = 3,
     Stopped = 4,
     Blocked = 5,
+    /// QuillNot's own window had focus when a keystroke was due, so it would have landed
+    /// here rather than in the document the run was aimed at.
+    Unfocused = 6,
 }
 
 impl Status {
@@ -272,6 +275,7 @@ impl Status {
             Status::Done => "done",
             Status::Stopped => "stopped",
             Status::Blocked => "blocked",
+            Status::Unfocused => "unfocused",
         }
     }
 
@@ -282,6 +286,7 @@ impl Status {
             3 => Status::Done,
             4 => Status::Stopped,
             5 => Status::Blocked,
+            6 => Status::Unfocused,
             _ => Status::Idle,
         }
     }
@@ -334,6 +339,18 @@ fn finish(app: &AppHandle, control: &Control, status: Status, typed: usize) {
     emit(app, control);
 }
 
+/// Whether QuillNot's own window has focus.
+///
+/// A keystroke posted now would land in this app, which is the one window that is never
+/// the target: the countdown exists so the person can click elsewhere, and this is what
+/// happens when they did not. Cheap enough to ask before every keystroke, and correct
+/// on every platform without a second OS API.
+fn our_window_is_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
+}
+
 async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
     control.total.store(steps.len(), Ordering::Relaxed);
     control.set(Status::Typing);
@@ -376,6 +393,12 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
             finish(&app, &control, Status::Stopped, typed);
             return;
         }
+        // Checked at the last moment before the key is posted, not at the start: the
+        // point of the countdown is that focus changes during it.
+        if our_window_is_focused(&app) {
+            finish(&app, &control, Status::Unfocused, typed);
+            return;
+        }
         if inject::apply(step.action).is_err() {
             finish(&app, &control, Status::Blocked, typed);
             return;
@@ -390,6 +413,61 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
     }
 
     finish(&app, &control, Status::Done, typed);
+}
+
+/// Stops whatever is running, for a caller with no `State` to hand: the global shortcut
+/// fires from the plugin's own thread, and by the time it is pressed the person is
+/// looking at the window the text was going into, not at this app.
+pub fn stop_all(app: &AppHandle) {
+    let state = app.state::<Typer>();
+    let running = state.0.lock().unwrap().as_ref().cloned();
+    if let Some(control) = running {
+        control.cancel.store(true, Ordering::Relaxed);
+        control.paused.store(false, Ordering::Relaxed);
+        emit(app, &control);
+    }
+}
+
+/// The stop chord: whatever the platform calls its command key, plus Alt and Shift.
+#[cfg(target_os = "macos")]
+fn stop_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+    Shortcut::new(
+        Some(Modifiers::SUPER | Modifiers::ALT | Modifiers::SHIFT),
+        Code::KeyS,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stop_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+    Shortcut::new(
+        Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+        Code::KeyS,
+    )
+}
+
+/// Registers the stop chord at startup, best-effort.
+///
+/// Escape still stops a run while this window has focus; this chord is the one that works
+/// when it does not, which is the normal case during a run. Another application may
+/// already own the chord, and that is not a reason to refuse to open the window, so a
+/// refusal is logged rather than returned.
+pub fn register_stop_shortcut(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    let handle = app.clone();
+    let registered = app
+        .global_shortcut()
+        .on_shortcut(stop_shortcut(), move |_app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                stop_all(&handle);
+            }
+        });
+
+    if let Err(err) = registered {
+        eprintln!("typer: the stop shortcut could not be registered: {err}");
+    }
 }
 
 /* ------------------------------------------------------------------- commands */
@@ -420,6 +498,13 @@ pub fn typer_start(
 ) -> Result<PlanInfo, String> {
     if text.trim().is_empty() {
         return Err("There is nothing to type yet.".into());
+    }
+    if !inject::supported() {
+        return Err(
+            "Typer types into other apps through their input system, and this build has \
+             no injector for this platform yet. The macOS and Windows builds have one."
+                .into(),
+        );
     }
     if !inject::trusted() {
         return Err(
@@ -493,11 +578,28 @@ pub fn typer_stop(app: AppHandle, state: State<'_, Typer>) -> StatusPayload {
     StatusPayload { status: "idle", typed: 0, total: 0 }
 }
 
-/// Whether this build can type at all, which is a different question from whether the
-/// person granted permission: a Windows build reports `false` here.
+/// What the Typer menu has to know, as three separate facts rather than one yes/no.
+///
+/// `supported` is whether this platform has an injector at all; `granted` is whether the
+/// person has given that injector the permission it needs; `platform` is the OS itself,
+/// so the menu can show the macOS Accessibility steps on macOS and a plain sentence
+/// somewhere else instead of directions that do not exist there.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    pub supported: bool,
+    pub granted: bool,
+    pub platform: &'static str,
+}
+
+/// Whether this build can type at all, and separately whether it has been allowed to.
 #[tauri::command]
-pub fn typer_accessibility() -> bool {
-    inject::trusted()
+pub fn typer_accessibility() -> Access {
+    Access {
+        supported: inject::supported(),
+        granted: inject::trusted(),
+        platform: std::env::consts::OS,
+    }
 }
 
 #[tauri::command]
@@ -540,6 +642,11 @@ mod inject {
     const KEY_DELETE: u16 = 51;
     const KEY_RETURN: u16 = 36;
     const HID_EVENT_TAP: u32 = 0;
+
+    /// Whether this platform has an injector at all. macOS does.
+    pub fn supported() -> bool {
+        true
+    }
 
     pub fn trusted() -> bool {
         unsafe { AXIsProcessTrusted() == 1 }
@@ -600,12 +707,128 @@ mod inject {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 mod inject {
-    //! Everything else, for now. The plan's Windows and X11 injectors are separate
-    //! work; reporting that plainly beats a menu entry that does nothing.
+    //! Windows: `SendInput` with `KEYEVENTF_UNICODE`.
+    //!
+    //! The character travels as its UTF-16 code unit, not as a virtual key, so the active
+    //! keyboard layout cannot turn an `é` into something else — the same reason the macOS
+    //! injector attaches a string to its event instead of guessing a key code. A character
+    //! outside the BMP is two units, sent in order, which is what a real keyboard does.
+    //!
+    //! There is no permission to grant. A desktop process may synthesise input at any
+    //! time; the one gate is the secure desktop, where UAC collects a password and the
+    //! system ignores everything posted to it.
+
+    use std::mem::size_of;
+
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+        VIRTUAL_KEY, VK_BACK, VK_RETURN,
+    };
 
     use super::Action;
+
+    pub fn supported() -> bool {
+        true
+    }
+
+    pub fn trusted() -> bool {
+        true
+    }
+
+    /// Windows has no equivalent of `IsSecureEventInputEnabled`.
+    ///
+    /// The macOS build can ask the OS whether a password prompt holds the keyboard; there
+    /// is no such query here, so a password field is only protected by the system ignoring
+    /// input on the secure desktop. That gap is named here rather than papered over.
+    pub fn secure_input() -> bool {
+        false
+    }
+
+    pub fn request() -> Result<(), String> {
+        // Nothing to open: there is no permission for this platform.
+        Ok(())
+    }
+
+    pub fn apply(action: Action) -> Result<(), String> {
+        match action {
+            // A newline is Return, not a character: most editors ignore a literal \n typed
+            // as text.
+            Action::Char('\n') => key(VK_RETURN, 0, 0),
+            Action::Char(ch) => character(ch),
+            Action::Backspace => key(VK_BACK, 0, 0),
+        }
+    }
+
+    fn character(ch: char) -> Result<(), String> {
+        for unit in units(ch) {
+            key(0, unit, KEYEVENTF_UNICODE)?;
+        }
+        Ok(())
+    }
+
+    /// The code units one character types, in order.
+    fn units(ch: char) -> Vec<u16> {
+        let mut buffer = [0u16; 2];
+        ch.encode_utf16(&mut buffer).iter().copied().collect()
+    }
+
+    /// One press and release. `scan` carries the UTF-16 unit when `flags` asks for a
+    /// Unicode keystroke, and is ignored otherwise.
+    fn key(vk: VIRTUAL_KEY, scan: u16, flags: u32) -> Result<(), String> {
+        for release in [0, KEYEVENTF_KEYUP] {
+            let input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: vk,
+                        wScan: scan,
+                        dwFlags: flags | release,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+
+            let sent = unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) };
+            if sent != 1 {
+                return Err("Windows refused the keystroke.".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn this_build_can_type_and_needs_no_permission() {
+            assert!(supported());
+            assert!(trusted());
+        }
+
+        #[test]
+        fn a_character_is_its_utf16_code_units() {
+            assert_eq!(units('a'), vec![0x0061]);
+            assert_eq!(units('é'), vec![0x00e9]);
+            // Outside the BMP: a surrogate pair, in the order the target expects.
+            assert_eq!(units('𝄞'), vec![0xd834, 0xdd1e]);
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod inject {
+    //! X11 has no injector yet. Reporting that plainly beats a menu entry that does
+    //! nothing, and beats asking for a permission this platform does not grant.
+
+    use super::Action;
+
+    pub fn supported() -> bool {
+        false
+    }
 
     pub fn trusted() -> bool {
         false
@@ -616,11 +839,12 @@ mod inject {
     }
 
     pub fn request() -> Result<(), String> {
-        Err("Typer types through macOS Accessibility, which this build does not have.".into())
+        Err("Typer has no injector on this platform yet, so there is no permission to grant."
+            .into())
     }
 
     pub fn apply(_action: Action) -> Result<(), String> {
-        Err("Typer is macOS-only in this build.".into())
+        Err("Typer has no X11 injector in this build.".into())
     }
 }
 

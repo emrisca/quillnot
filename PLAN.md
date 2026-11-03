@@ -5,10 +5,13 @@ this paragraph** and **fix what is wrong with it** — using OpenRouter's free m
 subscription and no server of our own; the account is the OpenRouter one each person already
 has, and their calls are billed to their own credits.
 
-Status: **M8 shipped.** Every milestone in this plan now exists: the shell, both tools
-against live free models, the verified grammar checker, local history and statistics, the
-provider list, the updater, the polish pass, the catalogue's per-call ranking, and Typer.
-What is left is not a milestone but proof — Typer has never posted a keystroke on a desktop
+Status: **M8 shipped, with the gaps each milestone names.** The shell, both tools against
+live free models, the verified grammar checker, local history and statistics, the provider
+list, the updater, the polish pass, the catalogue's per-call ranking and Typer all exist.
+What is missing is in three places. Typer has no Windows or X11 injector and no generated
+"finish by" mode. The score has no quality term, because a sample records only whether a
+call worked and how long it took. Rate-limit handling is one fixed retry, not a backoff.
+What is unproven is proof rather than code: Typer has never posted a keystroke on a desktop
 with Accessibility granted, and no update has installed over a previous version.
 
 Two features carry it past being a QuillBot skin. A **scored catalogue of every free
@@ -50,9 +53,11 @@ number of requests per minute and per day, plus a lifetime credit ceiling before
 them at all), and a busy provider returns 429 with a `Retry-After`-ish hint. So the client is
 built around limits rather than around a spinner:
 
-- one request at a time per window, with the remaining-requests header surfaced in the UI;
-- exponential backoff on 429/5xx, and a **fallback chain** — if the chosen model refuses, the
-  next free model in the picker is tried before the user sees an error;
+- one request at a time per block, then a **fallback chain** — if the chosen model refuses,
+  the next free model in the picker is tried before the user sees an error (built);
+- exponential backoff on 429/5xx, and the remaining-requests header surfaced in the UI —
+  **not built**: the retry between attempts is a fixed 700 ms, and `Retry-After` is quoted
+  back in the error message rather than waited on;
 - long text is chunked on paragraph boundaries and reassembled, because a 12k-word document in
   one call will both time out and burn the daily quota;
 - streaming, so a slow free model still shows progress instead of an apparently hung window.
@@ -120,9 +125,13 @@ input. Read as zero it would bury every model that is merely new or lightly used
 means no evidence, never a bad score**.
 
 "Collect as many useful free APIs as possible" is therefore a catalogue, not a crawler: every
-zero-priced model with at least one endpoint that streams text, refreshed on launch and on
-demand, cached in the data directory with its validator so a second launch costs one
-conditional request. Ids that vanished upstream are marked rather than silently dropped. The
+zero-priced model with at least one endpoint that streams text, cached in the data directory
+and refreshed whenever the AI Models view opens.
+
+**Two details of that sentence are still aspirational.** The cache carries a timestamp but no
+validator, so a refresh is a full request rather than one conditional `If-None-Match`, and the
+catalogue is not fetched at launch at all. An id that vanished upstream is simply absent from
+the next table; it is not kept and marked. The
 catalogue is also what makes the fallback chain in §1 mechanical — if the preferred model is
 down, the next one is a row in a table we already have.
 
@@ -152,6 +161,13 @@ best JSON emitter. **Settings → AI Models** shows the table (model, provider, 
 throughput, score for the selected task) with an **Auto** mode that takes the top row and a pin
 for anyone who disagrees with it.
 
+**As built, only two of those four terms exist.** `catalog.rs` weights availability 0.6 against
+speed 0.4 (`AVAILABILITY_SHARE`, `SPEED_SHARE`); there is no quality term and no penalty table.
+The evidence quality would need is not recorded either: a sample is `at`, `model`, `task`, `ok`
+and `ms` — no provider, first-token latency, token count, HTTP status, or whether the person
+kept, undid or reran the reply. The weights are file constants rather than per-task settings,
+so nothing in Settings adjusts them.
+
 ## 4. Typer: typing that looks like a person
 
 A field that types the text it holds — into itself, or into whatever window has focus — with a
@@ -179,8 +195,11 @@ paraphraser with a different prompt.
 
 **Rails, because this is the one feature that reaches into other applications.**
 
-- one shortcut to start and stop, plus Escape; stop when the target window loses focus; stop
-  after N seconds with no keystroke accepted;
+- a stop chord that reaches the app while another window has focus — `⌘⌥⇧S` on macOS,
+  `Ctrl+Alt+Shift+S` elsewhere — plus Escape while this window has focus. A run also refuses
+  to post a keystroke while QuillNot's own window has focus, because that is the one window
+  that is never the target. **Not built:** starting from the chord (the text lives in the
+  webview), and stopping after N idle seconds;
 - a visible state — the app is never typing invisibly — and never on by default;
 - refuse a secure field: on macOS `IsSecureEventInputEnabled()` is a hard no, so password
   prompts are untouchable;
@@ -201,14 +220,15 @@ about where it is going.
 │  │ issue cards · diff output   │  events     │  streaming · backoff     │  │
 │  └─────────────────────────────┘             │  chunker · fallbacks     │  │
 │  lib/diff.ts (word LCS)                      └───────────┬──────────────┘  │
-│  lib/prompt.ts (modes)                                   │ https           │
+│  src-tauri/src/prompt.rs (modes)                         │ https           │
 └──────────────────────────────────────────────────────────┼─────────────────┘
                                                            ▼
                                           openrouter.ai/api/v1  (free models)
 ```
 
 Rust owns everything that touches the network or the OS: `reqwest` with streaming,
-`keyring` for the key, `dirs` for the data directory, `tauri-plugin-updater` for releases.
+`keyring` for the key, Tauri's own `app_data_dir` for the data directory,
+`tauri-plugin-updater` for releases and `tauri-plugin-global-shortcut` for Typer's stop chord.
 The frontend owns presentation and the diff, and is replaceable without touching the network
 layer — which is why M1 can be built before any of it exists.
 
@@ -295,10 +315,12 @@ something is actually there. `.github/workflows/release.yml` builds Apple silico
 Windows on a `v*` tag through `tauri-action` with `includeUpdaterJson`. Intel Macs are not
 targeted: the job that built them was removed once nobody was going to install the result.
 
-What is still unproven is the last step: no release has been published, so no update has
-actually installed over a previous version. Two things worth knowing — the release key has
-to be in `.secrets/quillnot-updater.key` for `tauri build` to produce updater artifacts, and
-an unsigned macOS bundle installing an update is untested territory.
+What is still unproven is the last step: 0.1.1 and 0.2.0 are published and 0.2.1 sits as a
+draft, but no update has been installed from inside the app over an installed copy. Two
+things worth knowing — the release key has to be in `.secrets/quillnot-updater.key` for
+`tauri build` to produce updater artifacts, and an unsigned macOS bundle installing an
+update is untested territory. The release notes say *Open Anyway*, not right-click → Open:
+macOS 15 removed that shortcut.
 
 ### M6 · Polish
 
@@ -358,7 +380,7 @@ The keystroke planner, the cancellable driver and the per-platform injector (§4
 Accessibility request, the secure-field refusal and the shortcut. Paced completion first,
 generated completion after.
 
-**Shipped, macOS only.** `typer.rs` plans text into timed keystrokes: a delay per character
+**Shipped on macOS and Windows.** `typer.rs` plans text into timed keystrokes: a delay per character
 from a narrow distribution, shorter inside a word and longer at its start, a dwell after
 `,;:` and a longer one after `.!?`, a beat at a line break, and a typo rate that types a
 neighbouring key, pauses, backspaces and retypes. A deadline is met by re-deriving the pace
@@ -381,10 +403,23 @@ within two seconds of the target. Nothing is typed while a secure field has focu
 **Verified:** ten unit tests, including the invariant that the keystrokes reproduce the text
 exactly at a 25% typo rate across forty seeds, a 600-character run landing within two seconds
 of a 45-second deadline, the clamp when a deadline is impossible, and determinism under a
-fixed seed. **Not verified:** the injector has never posted an event, because that needs a
-desktop session with Accessibility granted and someone watching TextEdit. The Windows and X11
-injectors do not exist, and those builds report Typer as unavailable rather than offering a
-button that does nothing.
+fixed seed. **Not verified:** neither injector has ever posted an event, because that needs a
+desktop session and someone watching another window.
+
+The Windows injector exists: `SendInput` with `KEYEVENTF_UNICODE`, one code unit at a time so
+the active keyboard layout cannot reinterpret the character, a surrogate pair for anything
+outside the BMP, and Return/Backspace as real virtual keys. It compiles and its encoding is
+unit-tested, but it has not typed a character into Notepad. There is no Windows equivalent of
+`IsSecureEventInputEnabled`, so the secure-field refusal is macOS-only until one is found.
+The X11 injector still does not exist; Linux reports Typer as unavailable rather than
+offering a button that does nothing. The menu asks the Rust side for `supported`, `granted`
+and `platform`, so each build shows its own directions and Linux never sees the macOS steps.
+
+**Since the first pass:** the stop chord in §4 is registered through
+`tauri-plugin-global-shortcut`, so it reaches the app while another window has focus, and the
+driver now stops as `unfocused` rather than posting a keystroke into QuillNot's own window.
+Still missing from §4: the start half of the chord, the idle-second stop, and the X11
+injector.
 
 ## 7. What the UI mirrors, and what it deliberately does not
 
@@ -396,11 +431,16 @@ a mode change.
 Not mirrored: the "Upgrade to Premium" banner, and the QuillBot name and mark. Nothing here is
 scraped from QuillBot; the layout is a familiar shape, the code is ours.
 
-**Removed outright:** the AI detector, the plagiarism checker and the AI humanizer. The first
-two need a trained classifier over text and a corpus of sources to compare against; faking
-either with a chat model produces confident nonsense, and both invite claims the app cannot
-support. The humanizer is a paraphrase aimed at a detector that does not exist here, so it was
-decoration. The rail advertises only what a text model can actually do, plus what is planned.
+**Removed outright:** the AI detector and the plagiarism checker. Both need a trained
+classifier over text and a corpus of sources to compare against; faking either with a chat
+model produces confident nonsense, and both invite claims the app cannot support. The rail
+advertises only what a text model can actually do, plus what is planned.
+
+**The humanizer came back, on different terms.** As a paraphrase aimed at a detector it was
+decoration, so it went. It returned as *AI Humanizer*: a rewrite whose prompt is a pane — the
+**skill** — which is editable, remembered in `settings.json`, chosen from presets (one of them
+this workspace's `unslop`), and sent verbatim with every block. Nothing claims to defeat a
+detector; the claim is that you can read what the model was told.
 
 ## 8. Risks
 

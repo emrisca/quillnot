@@ -51,8 +51,8 @@ const CONTRACTIONS: Record<string, string> = {
 };
 
 const RULES: Rule[] = [
-  { kind: "spelling", message: "Misspelling of “the”.", pattern: /\bteh\b/gi, replace: () => "the" },
-  { kind: "spelling", message: "“a lot” is two words.", pattern: /\balot\b/gi, replace: () => "a lot" },
+  { kind: "spelling", message: "Misspelling of \"the\".", pattern: /\bteh\b/gi, replace: () => "the" },
+  { kind: "spelling", message: "\"a lot\" is two words.", pattern: /\balot\b/gi, replace: () => "a lot" },
   {
     kind: "spelling",
     message: "This contraction is missing its apostrophe.",
@@ -80,13 +80,13 @@ const RULES: Rule[] = [
   },
   {
     kind: "style",
-    message: "The pronoun “I” is always capitalised.",
+    message: "The pronoun \"I\" is always capitalised.",
     pattern: /\bi\b/g,
     replace: () => "I",
   },
   {
     kind: "style",
-    message: "“very” makes the adjective work harder than it needs to.",
+    message: "\"very\" makes the adjective work harder than it needs to.",
     pattern: /\bvery\s+(\w+)/gi,
     replace: (hit) => hit[1],
   },

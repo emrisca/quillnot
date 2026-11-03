@@ -79,6 +79,25 @@ pub fn grammar_prompt(text: &str) -> (String, String) {
     (GRAMMAR_SYSTEM.to_string(), user)
 }
 
+const SKILL_SYSTEM: &str = "You edit text by following a written skill. The skill is the \
+whole of your brief: apply every rule in it, and where the skill is silent keep the \
+author's meaning, facts, names, numbers and paragraph breaks exactly as they are. You \
+return only the edited text: no preamble, no explanation, no quotation marks and no \
+markdown fences. You never add information that is not in the text.";
+
+/// A rewrite whose instructions the person wrote themselves, or picked from a preset.
+///
+/// The skill is bundled with the request rather than being a mode name the backend
+/// interprets: what the humanizer pane shows is exactly what the model is told, which is
+/// the point of making it editable.
+pub fn skill_prompt(skill: &str, block: &str) -> (String, String) {
+    let user = format!(
+        "The skill to apply:\n\n{}\n\nThe text to edit:\n\n{block}",
+        skill.trim()
+    );
+    (SKILL_SYSTEM.to_string(), user)
+}
+
 const SPAN_SYSTEM: &str = "You rewrite one sentence so it can replace itself in a paragraph. \
 You answer with the rewritten sentence only: no preamble, no explanation, no quotation marks, \
 no markdown. You keep its facts, its tense and its function in the paragraph.";
@@ -193,6 +212,14 @@ mod tests {
         assert!(user.contains("Summarise"));
         assert!(user.contains("at most a third of the length"));
         assert!(user.contains("nothing that is not already in the text"));
+    }
+
+    #[test]
+    fn a_skill_prompt_carries_the_skill_verbatim() {
+        let (system, user) = skill_prompt("No em dashes.\nStraight quotes.", "the text");
+        assert!(system.contains("follow"));
+        assert!(user.contains("No em dashes.\nStraight quotes."));
+        assert!(user.ends_with("the text"));
     }
 
     #[test]

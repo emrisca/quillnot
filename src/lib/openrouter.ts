@@ -64,6 +64,8 @@ export type ParaphraseRequest = {
   mode: string;
   strength: number;
   model?: string;
+  /** The humanizer's skill, sent verbatim in place of the mode instructions. */
+  skill?: string;
 };
 
 export type ParaphraseResult = { text: string; model: string; blocks: number };

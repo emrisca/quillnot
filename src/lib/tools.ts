@@ -1,6 +1,6 @@
 import type { IconName } from "../icons";
 
-export type ToolId = "paraphraser" | "grammar" | "typer" | "models" | "settings";
+export type ToolId = "paraphraser" | "grammar" | "humanizer" | "typer" | "models" | "settings";
 
 export type RailItem = {
   key: string;
@@ -22,6 +22,9 @@ export const RAIL: RailItem[] = [
   { key: "projects", label: "Projects", icon: "projects", soon: true },
   { key: "paraphraser", label: "Paraphraser", icon: "paraphrase", tool: "paraphraser" },
   { key: "grammar", label: "Grammar Checker", icon: "grammar", tool: "grammar" },
+  // The humanizer is a rewrite whose prompt is a pane rather than a mode: the skill it
+  // shows is what the model is sent, so it can be edited and it is remembered.
+  { key: "humanizer", label: "AI Humanizer", icon: "humanizer", tool: "humanizer" },
   // Typer mimics human typing (plan §4); AI Models is the scored free-endpoint
   // catalogue (§3).
   { key: "typer", label: "Typer", icon: "typer", tool: "typer" },
@@ -38,6 +41,7 @@ export const RAIL_FOOTER: RailItem[] = [
 export const TITLES: Record<ToolId, string> = {
   paraphraser: "Paraphrasing Tool",
   grammar: "Grammar Checker",
+  humanizer: "AI Humanizer",
   typer: "Typer",
   models: "AI Models",
   settings: "Settings",

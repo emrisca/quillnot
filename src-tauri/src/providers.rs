@@ -389,6 +389,8 @@ mod tests {
             default_mode: None,
             auto_model: None,
             pinned_model: None,
+            humanizer_skill: None,
+            humanizer_preset: None,
         }
     }
 

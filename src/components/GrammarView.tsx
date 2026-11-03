@@ -228,7 +228,7 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
                             title={
                               issue.unique === false
                                 ? "This wording appears more than once, so there is no safe place to apply it"
-                                : `Replace with “${issue.suggestion}”`
+                                : `Replace with "${issue.suggestion}"`
                             }
                             onClick={() => accept(issue)}
                           >

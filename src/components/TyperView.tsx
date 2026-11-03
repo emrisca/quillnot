@@ -12,6 +12,7 @@ import {
   typerStart,
   typerStatus,
   typerStop,
+  type TyperAccess,
   type TyperConfig,
   type TyperPlan,
   type TyperState,
@@ -24,6 +25,19 @@ const SAMPLE =
 
 const IDLE: TyperState = { status: "idle", typed: 0, total: 0 };
 
+/** The OS names a person recognizes, for the copy that has to change with the platform. */
+const PLATFORM_NAMES: Record<string, string> = {
+  macos: "macOS",
+  windows: "Windows",
+  linux: "Linux",
+};
+
+const platformName = (id: string) => PLATFORM_NAMES[id] ?? "this system";
+
+/** The stop chord, spelled the way the platform's keyboard spells it. */
+const stopChord = (platform: string | undefined) =>
+  platform === "macos" ? "\u2318\u2325\u21e7S" : "Ctrl+Alt+Shift+S";
+
 const LABELS: Record<TyperState["status"], string> = {
   idle: "Ready",
   typing: "Typing",
@@ -31,6 +45,7 @@ const LABELS: Record<TyperState["status"], string> = {
   done: "Finished",
   stopped: "Stopped",
   blocked: "Stopped: a secure field has focus",
+  unfocused: "Stopped: QuillNot had focus",
 };
 
 export function TyperView() {
@@ -43,10 +58,14 @@ export function TyperView() {
   const [deadline, setDeadline] = useState(45);
   const [state, setState] = useState<TyperState>(IDLE);
   const [plan, setPlan] = useState<TyperPlan | null>(null);
-  const [trusted, setTrusted] = useState<boolean | null>(null);
+  // Whether this platform can type at all, and whether it has been allowed to: two
+  // answers that lead to two different menus, so they are kept apart.
+  const [access, setAccess] = useState<TyperAccess | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const desktop = isDesktop();
+  const supported = access?.supported ?? false;
+  const needsPermission = desktop && access?.supported === true && !access.granted;
   const running = state.status === "typing" || state.status === "paused";
   const words = countWords(text);
   const config: TyperConfig = useMemo(
@@ -57,8 +76,8 @@ export function TyperView() {
   useEffect(() => {
     if (!desktop) return;
     void typerAccessibility()
-      .then(setTrusted)
-      .catch(() => setTrusted(false));
+      .then(setAccess)
+      .catch(() => setAccess({ supported: false, granted: false, platform: "" }));
     void typerStatus()
       .then(setState)
       .catch(() => setState(IDLE));
@@ -95,11 +114,13 @@ export function TyperView() {
     try {
       const summary = await typerStart(text, config);
       setPlan(summary);
-      setTrusted(true);
+      setAccess((current) => (current ? { ...current, granted: true } : current));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      if (message.toLowerCase().includes("accessibility")) setTrusted(false);
+      if (message.toLowerCase().includes("accessibility")) {
+        setAccess((current) => (current ? { ...current, granted: false } : current));
+      }
     }
   }
 
@@ -193,7 +214,7 @@ export function TyperView() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={!desktop || !text.trim()}
+                    disabled={!desktop || !supported || !text.trim()}
                     onClick={() => void start()}
                   >
                     Start typing
@@ -221,7 +242,16 @@ export function TyperView() {
                     Typer posts keystrokes to the system, so it only works in the desktop app.
                   </span>
                 </p>
-              ) : trusted === false ? (
+              ) : access && !access.supported ? (
+                <div className="typer__grant">
+                  <p>
+                    Typer types into other apps through the system's own input API. The macOS
+                    and Windows builds have one; this build has none for{" "}
+                    {platformName(access.platform)} yet, so nothing here will type until it
+                    ships.
+                  </p>
+                </div>
+              ) : needsPermission ? (
                 <div className="typer__grant">
                   <p>
                     macOS blocks keystrokes from apps it does not trust. Add QuillNot under
@@ -310,8 +340,16 @@ export function TyperView() {
               <ul className="typer__rails">
                 <li>Nothing is typed while a password field has focus.</li>
                 <li>The text comes from this editor, never from the clipboard.</li>
-                <li>Escape stops immediately, mid-word, wherever you are.</li>
-                <li>Start waits three seconds, so you can click into the target window.</li>
+                <li>
+                  {stopChord(access?.platform)} stops it from anywhere, even while another
+                  app has focus.
+                </li>
+                <li>Escape stops it too, while QuillNot has focus.</li>
+                <li>
+                  Start waits three seconds so you can click into the target window. If
+                  QuillNot is still focused when a keystroke is due, the run stops instead of
+                  typing into this app.
+                </li>
                 <li>Nothing that is typed is stored or sent anywhere.</li>
               </ul>
             </div>
