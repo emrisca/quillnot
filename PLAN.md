@@ -2,11 +2,17 @@
 
 A Tauri desktop app that does the two things people actually pay QuillBot for — **rewrite
 this paragraph** and **fix what is wrong with it** — using OpenRouter's free models. No
-subscription, no server of our own, no account beyond an OpenRouter key.
+subscription and no server of our own; the account is the OpenRouter one each person already
+has, and their calls are billed to their own credits.
 
 Status: **M1 in progress.** The shell, the workspace and both tool views exist against mock
 data. Nothing talks to OpenRouter yet, and that is deliberate: the layout is the expensive
 part to get wrong, and it is cheap to iterate on before an API sits underneath it.
+
+Two features carry it past being a QuillBot skin. A **scored catalogue of every free
+endpoint** OpenRouter exposes (§3), so the app calls the model that is fast and up *now*
+instead of one somebody hardcoded. And **Typer** (§4), a field that types the way a person
+does, hickups and all.
 
 ---
 
@@ -31,6 +37,12 @@ The list is **not** a constant in the app. It is fetched from `/models`, filtere
 the moment a provider changes a price. The picker keeps the last good list cached so the app is
 usable offline, and marks entries that have disappeared from upstream.
 
+`GET /api/v1/models/{author}/{slug}/endpoints` goes further, per **provider** serving a model:
+`uptime_last_5m`, `uptime_last_30m`, `uptime_last_1d`, `latency_last_30m`,
+`throughput_last_30m`, `context_length`, `max_completion_tokens`, `quantization`, `status`. That
+is the raw material for §3 — and it comes back `null` on an endpoint nobody called recently,
+which decides how the ranking has to treat missing evidence.
+
 **Rate limits are the real constraint, not price.** Free models are capped per account (a small
 number of requests per minute and per day, plus a lifetime credit ceiling before a key may use
 them at all), and a busy provider returns 429 with a `Retry-After`-ish hint. So the client is
@@ -51,6 +63,15 @@ frontend calls an `invoke("paraphrase", …)` command and receives text events; 
 key, and a compromised page in the webview cannot exfiltrate it. Settings shows only a masked
 fingerprint of the stored key.
 
+**The account is the user's, not the build's.** QuillNot ships no key. Settings offers *Sign in
+with OpenRouter* — OpenRouter's OAuth PKCE flow: the app opens
+`https://openrouter.ai/auth?callback_url=…&code_challenge=…&code_challenge_method=S256`, the
+person authorises it, and the code that comes back on the loopback redirect is exchanged at
+`POST /api/v1/auth/keys` for a key billed to *their* credits. Localhost callbacks are supported
+on any port, so the app binds an ephemeral one for the redirect and closes it immediately; the
+key goes straight into the keychain and never into the webview. Pasting a key stays as the
+fallback for anyone who prefers it.
+
 **Never trust a model's character offsets.** A grammar checker needs to know *where* each
 problem is, so the model is asked for `{original, replacement, message}` triples and the app
 finds `original` in the text itself, verifying it is unique before offering a fix. Models
@@ -69,9 +90,97 @@ the single most common complaint about every one of these tools.
 
 **Local history, stored in the app's own data directory** — never in the repo, never uploaded.
 Each run stores the original, the result, the mode, the model and the token counts, so the
-statistics view is real numbers rather than decoration.
+statistics view is real numbers rather than decoration. Those same rows are what the ranking in
+§3 is built from: a run is a measurement.
 
-## 3. Architecture
+## 3. The catalogue: every free endpoint, scored
+
+Two GETs, no key needed, carry everything a ranking needs:
+
+- `GET /api/v1/models` — one row per model: `id`, `context_length`, `pricing` (`prompt`,
+  `completion`, `input_cache_read`), `architecture` (modalities), `supported_parameters`.
+- `GET /api/v1/models/{author}/{slug}/endpoints` — one row per **provider** serving it:
+  `provider_name`, `quantization`, `context_length`, `max_completion_tokens`, `status`,
+  `supported_parameters`, and the measurements — `uptime_last_5m`, `uptime_last_30m`,
+  `uptime_last_1d`, `latency_last_30m`, `throughput_last_30m`.
+
+Checked on 3 Nov 2026: 17 zero-priced prompt models, every stat field present in the payload —
+and `null` on a free endpoint with no recent traffic. That null is the design's most important
+input. Read as zero it would bury every model that is merely new or lightly used, so **null
+means no evidence, never a bad score**.
+
+"Collect as many useful free APIs as possible" is therefore a catalogue, not a crawler: every
+zero-priced model with at least one endpoint that streams text, refreshed on launch and on
+demand, cached in the data directory with its validator so a second launch costs one
+conditional request. Ids that vanished upstream are marked rather than silently dropped. The
+catalogue is also what makes the fallback chain in §1 mechanical — if the preferred model is
+down, the next one is a row in a table we already have.
+
+**Every call is a sample.** Each run records model, provider, task, first-token latency, total
+duration, tokens per second, HTTP status, and whether the result was kept, undone or rerun.
+After a few dozen runs those numbers beat the platform's 30-minute window, because they are
+ours, per task, on this connection.
+
+**Scoring, per task** (`paraphrase`, `grammar`, `typer-finish`):
+
+```
+score = w₁·uptime + w₂·speed + w₃·quality − penalties
+```
+
+- *uptime* — platform `uptime_last_30m`, falling back to our own success ratio, then to a 0.5
+  prior when neither exists;
+- *speed* — median first-token latency and throughput, log-scaled, blended from platform stats
+  and our own samples;
+- *quality* — the one signal that cannot be bought: did the reply parse, was it length-sane,
+  did the person keep it or undo and rerun? A model that emits unusable JSON six times in ten
+  loses to one that is slower and always right;
+- *penalties* — 429 rate, a context too small for this document, a price that is no longer zero.
+
+The weights are per task, stored beside the samples and adjustable in Settings, because nobody —
+least of all a plan — knows in advance that one model is the best paraphraser and another the
+best JSON emitter. **Settings → AI Models** shows the table (model, provider, uptime, latency,
+throughput, score for the selected task) with an **Auto** mode that takes the top row and a pin
+for anyone who disagrees with it.
+
+## 4. Typer: typing that looks like a person
+
+A field that types the text it holds — into itself, or into whatever window has focus — with a
+human cadence rather than a pasted block: bursts and stalls, longer pauses at commas and
+paragraph breaks, **hiccups** (a held key, a doubled character, a backspace and a retype), and a
+shortcut that starts and stops it mid-word.
+
+Three parts, and only the last is hard:
+
+1. **The plan.** Text becomes timed keystrokes: per-character delay drawn from a distribution
+   with a per-word burst, extra dwell at `,` `.` `;` `?` and a full beat at line breaks, a
+   configurable typo rate with the correction landing a few characters later.
+2. **The driver.** A cancellable task emits each keystroke on schedule — pause, resume, and a
+   speed multiplier that makes a 90-second script land at 60.
+3. **The injector.** OS-level events, which a webview cannot produce: macOS `CGEventPost` with
+   `CGEventKeyboardSetUnicodeString` for arbitrary characters (needs Accessibility permission,
+   asked for once, with a sentence saying why); Windows `SendInput` with `KEYEVENTF_UNICODE`;
+   X11 `XTEST`.
+
+**"Finish by time"** is two modes. *Paced* takes the remaining characters and the time budget
+and derives characters per second from them, clamped to human bounds, so a two-minute schedule
+for 600 words lands the last character at 2:00 rather than racing or stalling. *Generated*
+sends what is already typed to the model and types on from there — the same client as the
+paraphraser with a different prompt.
+
+**Rails, because this is the one feature that reaches into other applications.**
+
+- one shortcut to start and stop, plus Escape; stop when the target window loses focus; stop
+  after N seconds with no keystroke accepted;
+- a visible state — the app is never typing invisibly — and never on by default;
+- refuse a secure field: on macOS `IsSecureEventInputEnabled()` is a hard no, so password
+  prompts are untouchable;
+- the text comes from our own field, never from the clipboard, and is never re-read from
+  another app.
+
+M8 builds it. The rail carries the entry from now on, dimmed, so the shape of the app is honest
+about where it is going.
+
+## 5. Architecture
 
 ```
 ┌──────────────────────────── QuillNot (Tauri v2) ───────────────────────────┐
@@ -93,7 +202,7 @@ Rust owns everything that touches the network or the OS: `reqwest` with streamin
 The frontend owns presentation and the diff, and is replaceable without touching the network
 layer — which is why M1 can be built before any of it exists.
 
-## 4. Milestones
+## 6. Milestones
 
 ### M1 · Shell and workspace — this milestone
 
@@ -154,7 +263,28 @@ sentence-level diff comparison view, export to Markdown, and the "premium-ish" e
 QuillBot gates — summarize and humanize — as modes on the same client, since they are the same
 request with a different prompt.
 
-## 5. What the UI mirrors, and what it deliberately does not
+### M7 · The catalogue and the ranking
+
+`catalog.rs`: the two GETs in §3, cached with their validator, filtered to zero-priced models
+with a text-out endpoint; a `samples` table written by every run; per-task scoring with stored
+weights; Settings → AI Models with the sortable table, Auto mode and pinning. The fallback
+chain in M2 reads this table instead of a hardcoded order.
+
+**Done when:** the table lists every zero-priced endpoint with its uptime and our measured
+latency; Auto picks a model that is not simply the alphabetically first; a model made to fail
+three times running drops down the order and climbs back once it recovers.
+
+### M8 · Typer
+
+The keystroke planner, the cancellable driver and the per-platform injector (§4), plus the
+Accessibility request, the secure-field refusal and the shortcut. Paced completion first,
+generated completion after.
+
+**Done when:** on macOS with Accessibility granted, Typer types a paragraph into TextEdit at a
+human cadence, stops mid-word on the shortcut and resumes, and a "finish by 0:45" run lands
+within two seconds of the target. Nothing is typed while a secure field has focus.
+
+## 7. What the UI mirrors, and what it deliberately does not
 
 Mirrored: the left tool rail with icon-over-label items, mode tabs with an underline on the
 active one and a synonym slider on the right, the two-pane editor with per-pane word counts and
@@ -165,7 +295,7 @@ Not mirrored: the "Upgrade to Premium" banner, the AI-detector and plagiarism cl
 a scoring model we do not have and would be dishonest to fake), and the QuillBot name and
 mark. Nothing here is scraped from QuillBot; the layout is a familiar shape, the code is ours.
 
-## 6. Risks
+## 8. Risks
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
@@ -176,15 +306,22 @@ mark. Nothing here is scraped from QuillBot; the layout is a familiar shape, the
 | Key leakage | High | Key only in the OS keychain, read only by Rust; never in the webview, never in a log, never in the repo |
 | Long text times out | Medium | Paragraph chunking, streaming, cancel button |
 | Unsigned builds warn on launch | Low | Expected and documented in the release notes; no certificate budget for a free tool |
+| Ranking on missing platform stats | Medium | `null` uptime is "no evidence", never zero; our own samples fill the gap, with a 0.5 prior until they exist |
+| Typer read as a keylogger by AV or the OS | High — it injects keystrokes | Opt-in only, visible state, no clipboard, nothing typed is stored, source in the open, Accessibility asked for by name |
+| Typer types into the wrong window | High | Focus check before the first keystroke, a countdown with Escape, stop the moment focus moves |
 
-## 7. Open questions
+## 9. Open questions
 
-1. **Whose key?** A build that expects each user to paste their own OpenRouter key is free to
-   run and honest about limits. Bundling one would mean shipping a secret to every download and
-   eating everyone's quota. The plan assumes **user-supplied key**, with the app usable in mock
-   mode before one is added.
+1. ~~**Whose key?**~~ **Answered: each person's own, obtained by signing in.** Settings offers
+   *Sign in with OpenRouter* — the OAuth PKCE flow in §2 — so someone authorises once and the
+   key that comes back is billed to their own credits and revocable from their account page.
+   Pasting a key stays as a fallback, and the app stays usable in mock mode before either.
 2. **Grammar checker vs paraphraser default.** QuillBot opens on the paraphraser; this does the
    same, but the grammar tool is the one people keep installed, so it may deserve the default
    slot once it is real.
 3. **Windows build.** The release workflow will cover it, but the primary target here is macOS
    on Apple silicon, like the other two desktop apps in this workspace.
+4. **Typer's blast radius.** Typing into other applications is the one feature that can get a
+   person banned by a site whose terms forbid posing as a human, or flagged by security
+   software. It ships opt-in with a visible state; whether its default target is our own field
+   or the focused window anywhere is worth deciding before M8 rather than during it.

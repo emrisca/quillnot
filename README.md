@@ -14,8 +14,12 @@ The paraphrase and grammar results are produced locally by `src/lib/paraphrase.t
 `src/lib/grammar.ts` so the layout can be judged before an API sits under it. The `Mock`
 badge in the header marks that honestly.
 
-[PLAN.md](PLAN.md) has the milestones: the OpenRouter client next, then the real grammar
-checker, history and statistics, then the updater and releases.
+The rail also carries two planned entries: **Typer**, a field that types the way a person does
+(hickups, pauses, start and stop on a shortcut), and **AI Models**, the scored catalogue of free
+endpoints the app picks from.
+
+[PLAN.md](PLAN.md) has the milestones: the OpenRouter client and the scored catalogue next,
+then the real grammar checker, history and statistics, then the updater and releases.
 
 ## Running it
 

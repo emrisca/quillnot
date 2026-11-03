@@ -25,7 +25,9 @@ export type IconName =
   | "clock"
   | "key"
   | "download"
-  | "warning";
+  | "warning"
+  | "typer"
+  | "models";
 
 // Single-path icons: every glyph is one `d`, which keeps the component to a map
 // and avoids an icon package for the twenty-odd marks the shell needs.
@@ -63,6 +65,9 @@ const PATHS: Record<IconName, string> = {
   key: "M16.4 8.6a3.4 3.4 0 1 1-3.5 3.3M13 12 4 21h3v-3h3v-3h2l1-1",
   download: "M12 3.8v11.4M7.8 11.4 12 15.6l4.2-4.2M5 20.2h14",
   warning: "M12 4.2 21 19H3zM12 9.6v4.2M12 16.6h.01",
+  typer:
+    "M3.6 7.6h16.8A1.6 1.6 0 0 1 22 9.2v5.6a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 14.8V9.2a1.6 1.6 0 0 1 1.6-1.6zM6 11h.01M9 11h.01M12 11h.01M15 11h.01M18 11h.01M7 14.4h10",
+  models: "M12 3.4 21 8.1l-9 4.7-9-4.7zM3.4 12.1 12 16.5l8.6-4.4M3.4 15.9 12 20.3l8.6-4.4",
 };
 
 export function Icon({
