@@ -8,18 +8,17 @@ Built with Tauri v2, React 19 and Vite.
 
 ## Status
 
-**M1 — the workspace exists, on mock output.** Both tools are laid out end to end: mode
-tabs, the two-pane editor, per-pane word counts, the action rail and the suggestion card.
-The paraphrase and grammar results are produced locally by `src/lib/paraphrase.ts` and
-`src/lib/grammar.ts` so the layout can be judged before an API sits under it. The `Mock`
-badge in the header marks that honestly.
+**M5 — updates and releases.** Rewrites stream from the free model you pick, the grammar
+checker only offers a fix for a quote it found in your text, every run is kept locally in a
+JSON log that History and Statistics read, and the app checks its own release feed for
+updates. **Typer** and the per-call ranking of the free catalogue are still ahead; the rail
+marks them dimmed.
 
-The rail also carries two planned entries: **Typer**, a field that types the way a person does
-(hickups, pauses, start and stop on a shortcut), and **AI Models**, the scored catalogue of free
-endpoints the app picks from.
+The header's `Mock` badge means no account is connected and results come from the local mock
+in `src/lib/paraphrase.ts`, so the app is usable before anyone signs in. Once a key is in the
+keychain it reads `Live`.
 
-[PLAN.md](PLAN.md) has the milestones: the OpenRouter client and the scored catalogue next,
-then the real grammar checker, history and statistics, then the updater and releases.
+[PLAN.md](PLAN.md) has the milestones and what each one is waiting on.
 
 ## Running it
 
@@ -31,8 +30,29 @@ npm run typecheck
 npm run tauri build    # a bundle in src-tauri/target/release/bundle
 ```
 
-No API key is needed for this milestone. From M2 the key is entered in Settings, stored in
-the OS keychain, and used only from Rust.
+No API key is needed to look around: without one the tools answer from the mock. A key is
+entered in Settings, stored in the OS keychain and used only from Rust.
+
+## Releases
+
+Tagging `v0.1.1` runs `.github/workflows/release.yml`, which builds macOS (Apple silicon and
+Intel) and Windows, signs the updater archives and publishes the release with the
+`latest.json` the app reads.
+
+The signing key is a minisign pair made once with:
+
+```bash
+npx tauri signer generate -w .secrets/quillnot-updater.key
+```
+
+Its public half belongs in `tauri.conf.json` (`plugins.updater.pubkey`); its private half
+belongs in the repository secret `TAURI_SIGNING_PRIVATE_KEY`, and must also be present
+locally for `npm run tauri build` to emit updater artifacts. Losing it means existing
+installs can no longer be updated — there is no way to re-sign an update for them.
+
+The bundles are not notarised or code-signed, so the first launch on macOS needs
+right-click → Open. Updates installed from inside the app are verified against the release
+key instead.
 
 ## Layout
 

@@ -11,7 +11,8 @@
 //!   uptime/latency/throughput rows the ranking is built from;
 //! - [`openrouter`] — OAuth PKCE sign-in over a loopback callback, and the chunked,
 //!   streaming completion the workspace calls;
-//! - [`prompt`] — the mode instructions and the block splitter.
+//! - [`prompt`] — the mode instructions and the block splitter;
+//! - [`updates`] — checking the release feed and installing what it offers.
 
 mod catalog;
 mod grammar;
@@ -21,12 +22,14 @@ mod prompt;
 mod providers;
 pub mod self_test;
 mod store;
+mod updates;
 
 use serde::Serialize;
 use tauri::AppHandle;
 
 use openrouter::{ParaphraseRequest, ParaphraseResult};
 use providers::ProviderStatus;
+use updates::{app_version, check_update, install_update};
 
 /// What the UI needs to know about the account: whether one is connected, and a
 /// hint that is *not* the key. The frontend never receives the secret itself.
@@ -229,7 +232,15 @@ pub const DELTA_EVENT: &str = "paraphrase:delta";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // The updater is only ever driven from Rust: the endpoint, the key and the
+        // downloaded archive stay out of the webview, which sees a version and a byte
+        // count.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Pending::default())
         .invoke_handler(tauri::generate_handler![
+            app_version,
+            check_update,
+            install_update,
             key_status,
             save_key,
             clear_key,

@@ -27,9 +27,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFM0M3OUZGRTM1NUE4QjAKUldTd3FGWGovM2s4bmwwNFJ2bWNxRVcwL011R1RkdTRoR1p3MWc2T0k3K3BTTlpJNzdqODQ2QXUK",
+      "endpoints": [
+        "https://github.com/emrisca/quillnot/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A desktop paraphrasing and grammar-checking workspace on OpenRouter's free models"
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 
 [lib]
 name = "quillnot_lib"
@@ -36,6 +36,11 @@ base64 = "0.22"
 # only discover by trying to sign in. `apple-native` is the Keychain,
 # `windows-native` the Credential Manager, and the Linux store is Secret Service over
 # pure-Rust crypto so no OpenSSL build is needed there.
+# In-app updates. The release workflow signs each updater archive with a minisign key
+# and publishes `latest.json`; the public half sits in `tauri.conf.json`, so a build
+# signed by anyone else is refused before it replaces this one.
+tauri-plugin-updater = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
