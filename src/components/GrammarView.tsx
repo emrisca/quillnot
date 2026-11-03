@@ -154,7 +154,10 @@ export function GrammarView() {
                         </div>
                       </div>
                       <p className="issue__quote">
-                        <span className="issue__old">{issue.quote}</span>
+                        {/* A doubled space has nothing to show for itself; the open-box
+                            marks make the fix legible instead of rendering as an empty
+                            span either side of the arrow. */}
+                        <span className="issue__old">{issue.quote.trim() ? issue.quote : "␣␣"}</span>
                         <Icon name="arrow" size={13} />
                         <span className="issue__new">{issue.suggestion}</span>
                       </p>
