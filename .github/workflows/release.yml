@@ -60,11 +60,14 @@ jobs:
           releaseBody: |
             QuillNot __VERSION__.
 
-            The builds are not notarised or code-signed, so macOS shows a warning on
-            the first launch: right-click the app and choose Open. Updates installed
-            from inside the app are verified against the release key instead.
+            The macOS builds are ad-hoc signed, not notarised, so the first launch is
+            blocked until you allow it: open the app, then System Settings > Privacy &
+            Security, scroll to Security, click Open Anyway and authenticate. macOS 15
+            removed the Control-click shortcut, and it never worked for an app macOS
+            reports as damaged. Updates installed from inside the app are verified
+            against the release key instead.
 
-            Once installed, QuillNot updates itself: Settings → Updates.
+            Once installed, QuillNot updates itself: Settings > Updates.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

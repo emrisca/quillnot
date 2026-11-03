@@ -54,9 +54,13 @@ belongs in the repository secret `TAURI_SIGNING_PRIVATE_KEY`, and must also be p
 locally for `npm run tauri build` to emit updater artifacts. Losing it means existing
 installs can no longer be updated — there is no way to re-sign an update for them.
 
-The bundles are not notarised or code-signed, so the first launch on macOS needs
-right-click → Open. Updates installed from inside the app are verified against the release
-key instead.
+The macOS bundles are ad-hoc signed, not notarised, so the first launch is blocked until it
+is allowed: open the app, then System Settings → Privacy & Security → Security → **Open
+Anyway**, and authenticate. macOS 15 removed the Control-click shortcut, and it never worked
+for an app macOS reports as *damaged*. Updates installed from inside the app are verified
+against the release key instead. To check any `.app` against the usual causes, run
+`skills/references/macos-bundle-check.sh /Applications/QuillNot.app` from the EmrysSkills
+workspace.
 
 ## Layout
 
