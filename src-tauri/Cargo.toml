@@ -57,6 +57,9 @@ windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"]
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Typer's X11 injector: XTest posts the key events, and XChangeKeyboardMapping borrows a
+# spare keycode for characters the current layout cannot type.
+x11-dl = "2.21"
 
 [profile.release]
 codegen-units = 1

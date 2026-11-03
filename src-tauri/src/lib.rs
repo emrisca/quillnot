@@ -45,7 +45,7 @@ use export::save_markdown;
 use span::{rephrase_sentence, word_synonyms};
 use typer::{
     typer_accessibility, typer_open_settings, typer_pause, typer_plan, typer_resume, typer_start,
-    typer_status, typer_stop, Typer,
+    typer_status, typer_stop, ArmedText, Typer,
 };
 use updates::{app_version, check_update, install_update};
 
@@ -386,6 +386,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(updates::Pending::default())
         .manage(Typer::default())
+        .manage(ArmedText::default())
         .manage(typer::StopShortcut::default())
         .setup(|app| {
             typer::register_stop_shortcut(app.handle());
@@ -445,6 +446,9 @@ pub fn run() {
             typer_stop,
             typer_accessibility,
             typer_open_settings,
+            typer::typer_arm,
+            typer::typer_disarm,
+            typer::typer_generate,
             typer::typer_shortcut,
             typer::set_typer_shortcut
         ])

@@ -18,12 +18,14 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::{openrouter, prompt, providers, samples};
 
 /// `src/lib/typer.ts` listens for exactly this string.
 pub const TYPER_EVENT: &str = "typer:state";
@@ -71,11 +73,14 @@ pub struct Config {
     /// Multiplier on the resting pace, 0.25..=3.
     pub speed: f64,
     pub deadline_secs: Option<f64>,
+    /// Stop the run after this many seconds in which no keystroke was accepted. A pause is
+    /// deliberate and does not count; a run nobody is watching does.
+    pub idle_secs: Option<f64>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { typo_rate: 0.04, speed: 1.0, deadline_secs: None }
+        Self { typo_rate: 0.04, speed: 1.0, deadline_secs: None, idle_secs: None }
     }
 }
 
@@ -85,7 +90,138 @@ impl Config {
             typo_rate: self.typo_rate.clamp(0.0, 0.25),
             speed: self.speed.clamp(0.25, 3.0),
             deadline_secs: self.deadline_secs.filter(|secs| *secs >= 1.0).map(|secs| secs.min(3600.0)),
+            // Under five seconds is not an idle limit, it is a race with the plan's own
+            // punctuation dwells, so it is refused rather than obeyed.
+            idle_secs: self.idle_secs.filter(|secs| *secs >= 5.0).map(|secs| secs.min(600.0)),
         }
+    }
+}
+
+/* ------------------------------------------------------------ injector vocabulary */
+
+/// A keystroke as an injector sees it: a printable character, or one of the two actions
+/// that are keys rather than text. Separate from [`Action`] so the mapping can be tested
+/// on a machine with no display and no injector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    Backspace,
+    Enter,
+}
+
+/// The key an action turns into. A newline is Return, not a character: most editors
+/// ignore a literal newline in a key event.
+pub fn key_for(action: Action) -> Key {
+    match action {
+        Action::Char('\n') => Key::Enter,
+        Action::Char(ch) => Key::Char(ch),
+        Action::Backspace => Key::Backspace,
+    }
+}
+
+/// The X11 keysym for a key.
+///
+/// Latin-1 keysyms are their own code point; everything else uses the Unicode keysym
+/// range, which is how X11 names a character no standard layout has.
+pub fn keysym(key: Key) -> u32 {
+    const BACKSPACE: u32 = 0xff08;
+    const RETURN: u32 = 0xff0d;
+    match key {
+        Key::Backspace => BACKSPACE,
+        Key::Enter => RETURN,
+        Key::Char(ch) => {
+            let code = ch as u32;
+            if code < 0x100 {
+                code
+            } else {
+                0x0100_0000 + code
+            }
+        }
+    }
+}
+
+/// Where an injector gave up. Naming the stage is the difference between "typing failed"
+/// and a sentence that says which thing to fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Display,
+    XTest,
+    Keymap,
+    Post,
+}
+
+impl Stage {
+    pub fn message(self) -> &'static str {
+        match self {
+            Stage::Display => {
+                "X11 could not open the display. Is DISPLAY set, and is an X server running?"
+            }
+            Stage::XTest => "This X server does not offer XTest, so nothing can be injected into it.",
+            Stage::Keymap => "X11 had no free keycode to type that character with.",
+            Stage::Post => "X11 refused the keystroke.",
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ idle stopping */
+
+/// Stops a run that has accepted nothing for the configured time.
+///
+/// Time is passed in rather than read here, so the arithmetic is tested without waiting
+/// ten seconds per case.
+#[derive(Debug, Clone)]
+pub struct IdleWatch {
+    limit: Option<Duration>,
+    last: Instant,
+}
+
+impl IdleWatch {
+    pub fn new(limit: Option<Duration>, now: Instant) -> Self {
+        Self { limit, last: now }
+    }
+
+    /// A keystroke landed, which is the only thing that resets the clock.
+    pub fn note(&mut self, now: Instant) {
+        self.last = now;
+    }
+
+    pub fn exceeded(&self, now: Instant) -> bool {
+        match self.limit {
+            Some(limit) => now.saturating_duration_since(self.last) >= limit,
+            None => false,
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ chord arming */
+
+/// The text and settings the chord would type if it started a run. The text lives in the
+/// webview, so the view hands it here whenever it changes and no run is live.
+#[derive(Debug, Clone)]
+pub struct Armed {
+    pub text: String,
+    pub config: Config,
+}
+
+#[derive(Default)]
+pub struct ArmedText(Mutex<Option<Armed>>);
+
+/// What the chord does, which depends on whether a run is live and whether anything is
+/// armed. Pure, so the whole truth table is tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordAction {
+    Stop,
+    Start,
+    Nothing,
+}
+
+pub fn chord_action(running: bool, armed: bool) -> ChordAction {
+    if running {
+        ChordAction::Stop
+    } else if armed {
+        ChordAction::Start
+    } else {
+        ChordAction::Nothing
     }
 }
 
@@ -264,6 +400,8 @@ enum Status {
     /// QuillNot's own window had focus when a keystroke was due, so it would have landed
     /// here rather than in the document the run was aimed at.
     Unfocused = 6,
+    /// Nothing was accepted for the configured idle time, so the run stopped itself.
+    Stalled = 7,
 }
 
 impl Status {
@@ -276,6 +414,7 @@ impl Status {
             Status::Stopped => "stopped",
             Status::Blocked => "blocked",
             Status::Unfocused => "unfocused",
+            Status::Stalled => "stalled",
         }
     }
 
@@ -287,6 +426,7 @@ impl Status {
             4 => Status::Stopped,
             5 => Status::Blocked,
             6 => Status::Unfocused,
+            7 => Status::Stalled,
             _ => Status::Idle,
         }
     }
@@ -351,10 +491,17 @@ fn our_window_is_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
+async fn drive(
+    app: AppHandle,
+    control: Arc<Control>,
+    steps: Vec<Step>,
+    idle_limit: Option<Duration>,
+) {
     control.total.store(steps.len(), Ordering::Relaxed);
     control.set(Status::Typing);
     emit(&app, &control);
+
+    let mut idle = IdleWatch::new(idle_limit, Instant::now());
 
     // The countdown, in slices so a stop lands during it rather than after it.
     let mut waited = 0u64;
@@ -382,6 +529,13 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
             finish(&app, &control, Status::Stopped, typed);
             return;
         }
+        // A run that has accepted nothing for the configured time is a run nobody is
+        // watching. Checked after the pause loop, so a deliberate pause is not mistaken
+        // for a stall.
+        if idle.exceeded(Instant::now()) {
+            finish(&app, &control, Status::Stalled, typed);
+            return;
+        }
         if inject::secure_input() {
             finish(&app, &control, Status::Blocked, typed);
             return;
@@ -391,6 +545,10 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
         }
         if control.cancel.load(Ordering::Relaxed) {
             finish(&app, &control, Status::Stopped, typed);
+            return;
+        }
+        if idle.exceeded(Instant::now()) {
+            finish(&app, &control, Status::Stalled, typed);
             return;
         }
         // Checked at the last moment before the key is posted, not at the start: the
@@ -406,6 +564,7 @@ async fn drive(app: AppHandle, control: Arc<Control>, steps: Vec<Step>) {
         if matches!(step.action, Action::Char(_)) {
             typed += 1;
             control.typed.store(typed, Ordering::Relaxed);
+            idle.note(Instant::now());
         }
         if typed % 6 == 0 {
             emit(&app, &control);
@@ -455,7 +614,7 @@ fn apply_stop_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), String>
     app.global_shortcut()
         .on_shortcut(shortcut, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
-                stop_all(&handle);
+                chord_fired(&handle);
             }
         })
         .map_err(|err| format!("the shortcut could not be registered: {err}"))?;
@@ -479,6 +638,56 @@ pub fn configured_shortcut(app: &AppHandle) -> String {
     crate::store::read_settings(app)
         .typer_stop_shortcut
         .unwrap_or_else(|| DEFAULT_STOP_SHORTCUT.to_string())
+}
+
+/// Whether a run is live, which is what the chord's stop half needs to know. A finished
+/// run leaves its control in the slot, so the status is read rather than the slot.
+fn run_is_live(app: &AppHandle) -> bool {
+    let state = app.state::<Typer>();
+    let guard = state.0.lock().unwrap();
+    match guard.as_ref() {
+        Some(control) => matches!(control.payload().status, "typing" | "paused"),
+        None => false,
+    }
+}
+
+/// The chord is one button with two halves: it stops a live run, and it starts the armed
+/// text when nothing is running. Arming happens in the view, because the text lives there.
+///
+/// The armed text is kept after a start, so a run that was stopped in its first sentence
+/// can be started again with the same chord. It is replaced or dropped when the text
+/// changes, so the chord can never type an old draft.
+fn chord_fired(app: &AppHandle) {
+    let armed = app.state::<ArmedText>().0.lock().unwrap().clone();
+    match chord_action(run_is_live(app), armed.is_some()) {
+        ChordAction::Stop => stop_all(app),
+        ChordAction::Start => {
+            if let Some(armed) = armed {
+                if let Err(err) = start_run(app, armed.text, armed.config) {
+                    eprintln!("typer: the chord could not start a run: {err}");
+                }
+            }
+        }
+        ChordAction::Nothing => eprintln!("typer: the chord was pressed with nothing armed"),
+    }
+}
+
+/// Hands the chord the text it should type. The view calls this whenever the text or its
+/// settings change and no run is live; empty text disarms it.
+#[tauri::command]
+pub fn typer_arm(state: State<'_, ArmedText>, text: String, config: Config) {
+    let mut armed = state.0.lock().unwrap();
+    *armed = if text.trim().is_empty() {
+        None
+    } else {
+        Some(Armed { text, config })
+    };
+}
+
+/// Forgets the armed text, so the chord cannot start a run from it.
+#[tauri::command]
+pub fn typer_disarm(state: State<'_, ArmedText>) {
+    *state.0.lock().unwrap() = None;
 }
 
 /// Registers the stop chord at startup, best-effort.
@@ -554,13 +763,10 @@ pub fn typer_plan(text: String, config: Config) -> PlanInfo {
 
 /// Starts typing into whatever has focus. Every reason to refuse is checked here, so
 /// the UI shows one message instead of a run that silently types nothing.
-#[tauri::command]
-pub fn typer_start(
-    app: AppHandle,
-    state: State<'_, Typer>,
-    text: String,
-    config: Config,
-) -> Result<PlanInfo, String> {
+///
+/// The button and the chord's start half both come through here, so they cannot drift
+/// apart: arming the chord is not a second, weaker way to run.
+pub fn start_run(app: &AppHandle, text: String, config: Config) -> Result<PlanInfo, String> {
     if text.trim().is_empty() {
         return Err("There is nothing to type yet.".into());
     }
@@ -586,6 +792,8 @@ pub fn typer_start(
         );
     }
 
+    let config = config.sanitised();
+    let idle_limit = config.idle_secs.map(Duration::from_secs_f64);
     let plan = plan(&text, &config);
     if plan.steps.is_empty() {
         return Err("There is nothing to type yet.".into());
@@ -596,7 +804,7 @@ pub fn typer_start(
 
     // Replacing the stored run is also how a second start cancels the first: the old
     // driver sees its own cancel flag and stops mid-word.
-    let previous = state.0.lock().unwrap().replace(control.clone());
+    let previous = app.state::<Typer>().0.lock().unwrap().replace(control.clone());
     if let Some(previous) = previous {
         previous.cancel.store(true, Ordering::Relaxed);
     }
@@ -604,10 +812,118 @@ pub fn typer_start(
     let handle = app.clone();
     let driver = control.clone();
     tauri::async_runtime::spawn(async move {
-        drive(handle, driver, plan.steps).await;
+        drive(handle, driver, plan.steps, idle_limit).await;
     });
 
     Ok(summary)
+}
+
+#[tauri::command]
+pub fn typer_start(app: AppHandle, text: String, config: Config) -> Result<PlanInfo, String> {
+    start_run(&app, text, config)
+}
+
+/// What a generated run turned into: the text it types, how much the model added, and the
+/// schedule it will follow.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Generated {
+    pub text: String,
+    pub added: usize,
+    pub plan: PlanInfo,
+}
+
+/// How many characters a continuation should add so the run meets its deadline.
+///
+/// Sized at the resting pace, clamped at both ends: a single word wastes a model call, and
+/// more than a minute of prose cannot be typed into a short deadline at any human speed.
+pub fn continuation_target(remaining_secs: f64) -> usize {
+    const LEAST: f64 = 60.0;
+    const MOST: f64 = 1200.0;
+    (remaining_secs.max(0.0) * BASE_CPS).clamp(LEAST, MOST).round() as usize
+}
+
+/// The text with a continuation appended: one space at the join, no fence, no preamble.
+/// An empty continuation leaves the text exactly as it was.
+pub fn join_continuation(original: &str, continuation: &str) -> String {
+    let cleaned = strip_continuation(continuation);
+    if cleaned.is_empty() {
+        return original.to_string();
+    }
+    let mut joined = original.trim_end().to_string();
+    if !joined.is_empty() {
+        joined.push(' ');
+    }
+    joined.push_str(&cleaned);
+    joined
+}
+
+/// Models like a fence or a "Continuation:" label even when told not to. Both are removed
+/// here rather than asked for more firmly, because one of them will still arrive one day.
+fn strip_continuation(raw: &str) -> String {
+    let mut body = raw.trim();
+    if let Some(rest) = body.strip_prefix("```") {
+        body = rest.trim_start_matches(|ch: char| ch.is_ascii_alphabetic()).trim_start();
+        body = body.strip_suffix("```").unwrap_or(body);
+    } else if let Some(rest) = body.strip_suffix("```") {
+        body = rest;
+    }
+    let body = body.trim();
+    let body = body.strip_prefix("Continuation:").unwrap_or(body);
+    body.trim().to_string()
+}
+
+/// The generated half of "finish by": the model writes the rest of the text to the length
+/// the remaining time allows, and the run starts on the joined result.
+///
+/// The run starts from the joined text rather than only the continuation, because the
+/// injected typing has to produce a whole document: a continuation sent on its own would
+/// land after whatever the target already contains.
+#[tauri::command]
+pub async fn typer_generate(
+    app: AppHandle,
+    text: String,
+    config: Config,
+) -> Result<Generated, String> {
+    if text.trim().is_empty() {
+        return Err("There is nothing to continue yet.".into());
+    }
+
+    let config = config.sanitised();
+    let Some(deadline) = config.deadline_secs else {
+        return Err(
+            "Generated typing works towards a \"finish by\" deadline; set one first.".into(),
+        );
+    };
+
+    // What the existing text already costs at a resting pace, so the model is asked for
+    // the time that is actually left rather than the whole deadline.
+    let resting = Config { deadline_secs: None, ..config.clone() };
+    let already = plan(&text, &resting).total_ms as f64 / 1000.0;
+    let target = continuation_target((deadline - already).max(1.0));
+
+    let route = providers::resolve(&app, None, samples::PARAPHRASE)?;
+    let (system, user) = prompt::continuation_prompt(&text, target);
+    let (reply, _model) = openrouter::complete(
+        Some(&app),
+        samples::PARAPHRASE,
+        &route.attempts,
+        &system,
+        &user,
+    )
+    .await?;
+
+    let joined = join_continuation(&text, &reply);
+    let added = joined.chars().count().saturating_sub(text.chars().count());
+    if added == 0 {
+        return Err(
+            "The model did not add anything to type. Try again, or write the ending yourself."
+                .into(),
+        );
+    }
+
+    let plan = start_run(&app, joined.clone(), config)?;
+    Ok(Generated { text: joined, added, plan })
 }
 
 #[tauri::command]
@@ -886,30 +1202,174 @@ mod inject {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod inject {
-    //! X11 has no injector yet. Reporting that plainly beats a menu entry that does
-    //! nothing, and beats asking for a permission this platform does not grant.
+    //! X11: XTest, with a spare keycode remapped to the wanted keysym for anything the
+    //! current layout cannot already type.
+    //!
+    //! The untestable edge is deliberately thin and named: [`Server`] is the only thing
+    //! that talks to the X server. Everything above it — which keysym a character becomes,
+    //! which key a newline becomes, which stage failed and what to say about it — is pure
+    //! and covered by tests that run with no display.
+    //!
+    //! X11 has no Accessibility permission to ask for. The desktop's own lock screen is
+    //! what stops injected input, and this build has no way to query it, which is said
+    //! plainly rather than implied by a "granted" that is always true.
 
-    use super::Action;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    use x11_dl::xlib;
+    use x11_dl::xtest;
+
+    use super::{key_for, keysym, Action, Key, Stage};
+
+    /// The keysym that means "nothing here", which is what a keycode is restored to.
+    const NO_SYMBOL: xlib::KeySym = 0;
 
     pub fn supported() -> bool {
-        false
+        true
     }
 
     pub fn trusted() -> bool {
-        false
+        true
     }
 
+    /// X11 has no equivalent of `IsSecureEventInputEnabled`. Said so rather than answered
+    /// with a `false` that reads like a check.
     pub fn secure_input() -> bool {
         false
     }
 
     pub fn request() -> Result<(), String> {
-        Err("Typer has no injector on this platform yet, so there is no permission to grant."
+        Err("X11 has no Accessibility permission to grant. Typer needs an X server with \
+             XTest, which every normal desktop has."
             .into())
     }
 
-    pub fn apply(_action: Action) -> Result<(), String> {
-        Err("Typer has no X11 injector in this build.".into())
+    pub fn apply(action: Action) -> Result<(), String> {
+        let key = key_for(action);
+        with_server(|server| server.press(key))
+    }
+
+    /// Runs one keystroke against the single shared display connection, opening it on
+    /// first use. One mutex means two keystrokes cannot interleave their keymap changes.
+    fn with_server<T>(body: impl FnOnce(&Server) -> Result<T, Stage>) -> Result<T, String> {
+        static SERVER: OnceLock<Mutex<Option<Server>>> = OnceLock::new();
+        let slot = SERVER.get_or_init(|| Mutex::new(None));
+        let mut guard = slot
+            .lock()
+            .map_err(|_| "the X11 connection was lost".to_string())?;
+        if guard.is_none() {
+            *guard = Some(Server::open()?);
+        }
+        let server = guard.as_ref().expect("just opened");
+        body(server).map_err(|stage| stage.message().to_string())
+    }
+
+    /// The whole untestable surface: a display pointer and the three X calls that use it.
+    struct Server {
+        xlib: xlib::Xlib,
+        xtest: xtest::XTest,
+        display: *mut xlib::Display,
+    }
+
+    // The pointer is only ever used while `with_server` holds its mutex, so moving it
+    // between threads is safe even though the raw pointer says otherwise.
+    unsafe impl Send for Server {}
+
+    impl Server {
+        fn open() -> Result<Self, String> {
+            let xlib = xlib::Xlib::open().map_err(|_| Stage::Display.message().to_string())?;
+            let xtest = xtest::XTest::open().map_err(|_| Stage::XTest.message().to_string())?;
+            let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
+            if display.is_null() {
+                return Err(Stage::Display.message().to_string());
+            }
+            Ok(Self { xlib, xtest, display })
+        }
+
+        /// One press and release of `key`.
+        fn press(&self, key: Key) -> Result<(), Stage> {
+            let wanted = xlib::KeySym::from(keysym(key));
+
+            // A key the layout already has needs no remapping, which is the common case
+            // for the Latin text these documents are written in.
+            let mapped = unsafe { (self.xlib.XKeysymToKeycode)(self.display, wanted) };
+            if mapped != 0 {
+                return self.tap(mapped);
+            }
+
+            // Otherwise borrow the highest keycode for one keystroke and put it back, so a
+            // character no layout has can still be typed without changing the keyboard.
+            let spare = self.spare_keycode().ok_or(Stage::Keymap)?;
+            self.remap(spare, wanted)?;
+            let tapped = self.tap(spare);
+            self.remap(spare, NO_SYMBOL)?;
+            tapped
+        }
+
+        /// Press, release, flush. A zero return from either event means the server refused
+        /// it, which is the only failure XTest reports.
+        fn tap(&self, keycode: u8) -> Result<(), Stage> {
+            let code = u32::from(keycode);
+            let pressed = unsafe { (self.xtest.XTestFakeKeyEvent)(self.display, code, 1, 0) };
+            let released = unsafe { (self.xtest.XTestFakeKeyEvent)(self.display, code, 0, 0) };
+            unsafe {
+                (self.xlib.XFlush)(self.display);
+            }
+            if pressed == 0 || released == 0 {
+                return Err(Stage::Post);
+            }
+            Ok(())
+        }
+
+        /// The highest keycode the server reports is the conventional spare: layouts use
+        /// the low ones, and the top is left for exactly this kind of remapping.
+        fn spare_keycode(&self) -> Option<u8> {
+            let mut min = 0i32;
+            let mut max = 0i32;
+            unsafe {
+                (self.xlib.XDisplayKeycodes)(self.display, &mut min, &mut max);
+            }
+            if max <= min || max <= 0 || max > 255 {
+                return None;
+            }
+            Some(max as u8)
+        }
+
+        fn remap(&self, keycode: u8, symbol: xlib::KeySym) -> Result<(), Stage> {
+            let symbols = [symbol];
+            unsafe {
+                (self.xlib.XChangeKeyboardMapping)(
+                    self.display,
+                    i32::from(keycode),
+                    1,
+                    symbols.as_ptr(),
+                    1,
+                );
+                (self.xlib.XSync)(self.display, 0);
+            }
+            // The server applies a mapping asynchronously; a keystroke sent in the same
+            // round trip would use the old symbol.
+            std::thread::sleep(Duration::from_millis(5));
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn this_build_has_an_injector_and_no_permission_to_ask_for() {
+            assert!(supported());
+            assert!(trusted());
+        }
+
+        #[test]
+        fn a_newline_is_the_return_keysym() {
+            assert_eq!(keysym(key_for(Action::Char('\n'))), 0xff0d);
+            assert_eq!(keysym(key_for(Action::Backspace)), 0xff08);
+        }
     }
 }
 
@@ -1013,5 +1473,89 @@ mod tests {
         let paced = Config { deadline_secs: Some(30.0), speed: 3.0, ..Config::default() };
         let chars = SAMPLE.chars().count();
         assert!((pace(chars, &paced) - chars as f64 / 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_chord_starts_when_nothing_runs_and_stops_when_something_does() {
+        assert_eq!(chord_action(true, true), ChordAction::Stop);
+        assert_eq!(chord_action(true, false), ChordAction::Stop);
+        assert_eq!(chord_action(false, true), ChordAction::Start);
+        assert_eq!(chord_action(false, false), ChordAction::Nothing);
+    }
+
+    #[test]
+    fn idle_time_runs_from_the_last_accepted_keystroke() {
+        let start = Instant::now();
+        let mut watch = IdleWatch::new(Some(Duration::from_secs(10)), start);
+        assert!(!watch.exceeded(start + Duration::from_secs(9)));
+        assert!(watch.exceeded(start + Duration::from_secs(10)));
+        watch.note(start + Duration::from_secs(9));
+        assert!(!watch.exceeded(start + Duration::from_secs(15)), "a keystroke resets it");
+        assert!(watch.exceeded(start + Duration::from_secs(19)));
+    }
+
+    #[test]
+    fn no_idle_limit_never_stops_a_run() {
+        let watch = IdleWatch::new(None, Instant::now());
+        assert!(!watch.exceeded(Instant::now() + Duration::from_secs(3_600)));
+    }
+
+    #[test]
+    fn an_idle_limit_too_short_to_beat_the_dwells_is_refused() {
+        let rushed = Config { idle_secs: Some(1.0), ..Config::default() }.sanitised();
+        assert_eq!(rushed.idle_secs, None);
+        let long = Config { idle_secs: Some(9_999.0), ..Config::default() }.sanitised();
+        assert_eq!(long.idle_secs, Some(600.0));
+    }
+
+    #[test]
+    fn a_newline_is_the_return_key_not_a_character() {
+        assert_eq!(key_for(Action::Char('\n')), Key::Enter);
+        assert_eq!(key_for(Action::Char('a')), Key::Char('a'));
+        assert_eq!(key_for(Action::Backspace), Key::Backspace);
+    }
+
+    #[test]
+    fn keysyms_are_themselves_in_latin_1_and_unicode_beyond_it() {
+        assert_eq!(keysym(Key::Char('A')), 0x41);
+        assert_eq!(keysym(Key::Char('é')), 0xe9);
+        assert_eq!(keysym(Key::Char('𝄞')), 0x0100_0000 + 0x1d11e);
+        // A newline only becomes Return in the action mapping; the raw character keeps
+        // its own keysym, which is what makes the mapping the place to look for it.
+        assert_eq!(keysym(key_for(Action::Char('\n'))), keysym(Key::Enter));
+        assert_eq!(keysym(Key::Backspace), 0xff08);
+        assert_eq!(keysym(Key::Enter), 0xff0d);
+        assert_ne!(keysym(Key::Char('a')), keysym(Key::Char('b')));
+        assert_ne!(keysym(Key::Char(' ')), keysym(Key::Enter));
+    }
+
+    #[test]
+    fn every_injector_stage_names_a_different_failure() {
+        let stages = [Stage::Display, Stage::XTest, Stage::Keymap, Stage::Post];
+        for (index, stage) in stages.iter().enumerate() {
+            assert!(!stage.message().is_empty());
+            for earlier in &stages[..index] {
+                assert_ne!(stage.message(), earlier.message(), "two stages share a message");
+            }
+        }
+    }
+
+    #[test]
+    fn a_continuation_is_sized_from_the_time_left() {
+        assert_eq!(continuation_target(0.0), 60, "a shorter answer is not worth a call");
+        assert_eq!(continuation_target(100.0), 700, "100 s at the resting pace");
+        assert_eq!(continuation_target(600.0), 1200, "capped so the deadline stays reachable");
+    }
+
+    #[test]
+    fn a_continuation_is_joined_without_repeating_the_text() {
+        assert_eq!(join_continuation("The release", "notes were late."), "The release notes were late.");
+        assert_eq!(
+            join_continuation("Ends with a space ", "```\nmore text\n```"),
+            "Ends with a space more text"
+        );
+        assert_eq!(join_continuation("Same", "   "), "Same");
+        assert_eq!(join_continuation("Same", "Continuation: more"), "Same more");
+        assert_eq!(join_continuation("", "Fresh start"), "Fresh start");
     }
 }

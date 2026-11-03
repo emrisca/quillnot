@@ -5,6 +5,9 @@ import { countWords } from "../lib/text";
 import {
   onTyperState,
   typerAccessibility,
+  typerArm,
+  typerDisarm,
+  typerGenerate,
   typerOpenSettings,
   typerPause,
   typerPlan,
@@ -70,6 +73,7 @@ const LABELS: Record<TyperState["status"], string> = {
   stopped: "Stopped",
   blocked: "Stopped: a secure field has focus",
   unfocused: "Stopped: QuillNot had focus",
+  stalled: "Stopped: nothing was accepted",
 };
 
 export function TyperView() {
@@ -80,6 +84,8 @@ export function TyperView() {
   const [speed, setSpeed] = useState(1);
   const [deadlineOn, setDeadlineOn] = useState(false);
   const [deadline, setDeadline] = useState(45);
+  const [idleOn, setIdleOn] = useState(false);
+  const [idleSeconds, setIdleSeconds] = useState(30);
   const [state, setState] = useState<TyperState>(IDLE);
   const [plan, setPlan] = useState<TyperPlan | null>(null);
   // The stop chord as the OS has it, and whether the next keypress is being captured as a
@@ -103,8 +109,13 @@ export function TyperView() {
   const running = state.status === "typing" || state.status === "paused";
   const words = countWords(text);
   const config: TyperConfig = useMemo(
-    () => ({ typoRate, speed, deadlineSecs: deadlineOn ? deadline : null }),
-    [typoRate, speed, deadlineOn, deadline],
+    () => ({
+      typoRate,
+      speed,
+      deadlineSecs: deadlineOn ? deadline : null,
+      idleSecs: idleOn ? idleSeconds : null,
+    }),
+    [typoRate, speed, deadlineOn, deadline, idleOn, idleSeconds],
   );
 
   useEffect(() => {
@@ -125,6 +136,19 @@ export function TyperView() {
     });
     return () => unlisten?.();
   }, [desktop]);
+
+  // The chord's start half needs the text, which lives here. Armed on every change while
+  // nothing is running, so the chord can never type an old draft; disarmed when the
+  // editor is emptied.
+  useEffect(() => {
+    if (!desktop || running) return;
+    if (!text.trim()) {
+      void typerDisarm();
+      return;
+    }
+    const id = window.setTimeout(() => void typerArm(text, config), 400);
+    return () => window.clearTimeout(id);
+  }, [desktop, running, text, config]);
 
   // The estimate is the plan itself, so the numbers on screen before a run are the ones
   // the driver will follow. It is cheap: no network, no injection, just arithmetic.
@@ -160,6 +184,22 @@ export function TyperView() {
       if (message.toLowerCase().includes("accessibility")) {
         setAccess((current) => (current ? { ...current, granted: false } : current));
       }
+    }
+  }
+
+  // "Finish by" with the ending written for you: the model continues the text to the
+  // length the deadline leaves room for, and the run starts on the joined result.
+  async function generate() {
+    setError(null);
+    setNote(null);
+    setFirstKeyAt(null);
+    try {
+      const result = await typerGenerate(text, config);
+      setText(result.text);
+      setPlan(result.plan);
+      setNote(`The model wrote ${result.added} more characters and the run has started.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     }
   }
 
@@ -312,14 +352,27 @@ export function TyperView() {
                     </button>
                   </>
                 ) : (
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!desktop || !supported || !text.trim()}
-                    onClick={() => void start()}
-                  >
-                    Start typing
-                  </button>
+                  <>
+                    {deadlineOn ? (
+                      <button
+                        type="button"
+                        className="btn btn--quiet"
+                        disabled={!desktop || !supported || !text.trim()}
+                        title="Write the ending to fit the deadline, then type the whole piece"
+                        onClick={() => void generate()}
+                      >
+                        Write the rest
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!desktop || !supported || !text.trim()}
+                      onClick={() => void start()}
+                    >
+                      Start typing
+                    </button>
+                  </>
                 )}
               </div>
             </footer>
@@ -442,6 +495,31 @@ export function TyperView() {
                     <span className="typer__value">seconds</span>
                   </span>
                 </label>
+                <label className="typer__row">
+                  <span className="typer__label">Stop when idle</span>
+                  <span className="typer__inline">
+                    <input
+                      type="checkbox"
+                      checked={idleOn}
+                      disabled={running}
+                      onChange={(event) => setIdleOn(event.target.checked)}
+                      aria-label="Stop after a stretch with no keystroke accepted"
+                    />
+                    <input
+                      className="typer__num"
+                      type="number"
+                      min={5}
+                      max={600}
+                      step={5}
+                      value={idleSeconds}
+                      disabled={running || !idleOn}
+                      onChange={(event) => setIdleSeconds(Number(event.target.value) || 30)}
+                      aria-label="Seconds of silence before stopping"
+                    />
+                    <span className="typer__value">seconds</span>
+                  </span>
+                </label>
+
                 <div className="typer__row">
                   <span className="typer__label">Stop chord</span>
                   <span className="typer__inline">
@@ -466,8 +544,14 @@ export function TyperView() {
                 <li>Nothing is typed while a password field has focus.</li>
                 <li>The text comes from this editor, never from the clipboard.</li>
                 <li>
-                  {chordText} stops it from anywhere, even while another app has focus.
+                  {chordText} stops a run from anywhere, even while another app has focus,
+                  and starts the text in this editor when nothing is running.
                 </li>
+                {idleOn ? (
+                  <li>
+                    A run that accepts no keystroke for {idleSeconds} seconds stops itself.
+                  </li>
+                ) : null}
                 <li>Escape stops it too, while QuillNot has focus.</li>
                 <li>
                   Start waits three seconds so you can click into the target window. If

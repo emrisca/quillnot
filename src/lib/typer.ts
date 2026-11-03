@@ -10,7 +10,9 @@ export type TyperStatus =
   | "stopped"
   | "blocked"
   /** Stopped because QuillNot's own window had focus: the keystroke would have landed here. */
-  | "unfocused";
+  | "unfocused"
+  /** Stopped itself: nothing was accepted for the configured idle seconds. */
+  | "stalled";
 
 export type TyperState = { status: TyperStatus; typed: number; total: number };
 
@@ -24,7 +26,12 @@ export type TyperConfig = {
   speed: number;
   /** "Finish by" in seconds. Wins over `speed`, because that is the point of it. */
   deadlineSecs: number | null;
+  /** Stop after this many seconds with no keystroke accepted. Null never stops on time. */
+  idleSecs: number | null;
 };
+
+/** What a generated run produced: the finished text, what the model added, and the plan. */
+export type TyperGenerated = { text: string; added: number; plan: TyperPlan };
 
 /** Matches `TYPER_EVENT` in `src-tauri/src/typer.rs`. */
 export const TYPER_EVENT = "typer:state";
@@ -40,6 +47,31 @@ export async function typerPlan(text: string, config: TyperConfig): Promise<Type
 export async function typerStart(text: string, config: TyperConfig): Promise<TyperPlan> {
   if (!isDesktop()) throw notDesktop();
   return invoke<TyperPlan>("typer_start", { text, config });
+}
+
+/**
+ * Hands the chord the text it should type. The chord is one button with two halves: it
+ * stops a live run, and it starts this text when nothing is running. The view calls this
+ * whenever the text or settings change, so the chord can never type an old draft.
+ */
+export async function typerArm(text: string, config: TyperConfig): Promise<void> {
+  if (!isDesktop()) return;
+  await invoke("typer_arm", { text, config });
+}
+
+/** Forgets the armed text, so the chord cannot start a run from it. */
+export async function typerDisarm(): Promise<void> {
+  if (!isDesktop()) return;
+  await invoke("typer_disarm");
+}
+
+/**
+ * "Finish by" with the model writing the ending: it continues the text to the length the
+ * deadline leaves room for, and starts typing the joined result.
+ */
+export async function typerGenerate(text: string, config: TyperConfig): Promise<TyperGenerated> {
+  if (!isDesktop()) throw notDesktop();
+  return invoke<TyperGenerated>("typer_generate", { text, config });
 }
 
 export async function typerPause(): Promise<TyperState> {

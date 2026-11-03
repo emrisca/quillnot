@@ -8,8 +8,10 @@ has, and their calls are billed to their own credits.
 Status: **M8 shipped, with the gaps each milestone names.** The shell, both tools against
 live free models, the verified grammar checker, local history and statistics, the provider
 list, the updater, the polish pass, the catalogue's per-call ranking and Typer all exist.
-What is missing is in one place. Typer has no X11 injector, no generated "finish by" mode,
-no start half of its chord and no idle-second stop; macOS and Windows both type. The score
+What is missing is in one place. Typer's four remaining pieces now exist: an X11 injector
+over XTest, the generated "finish by" mode, the chord's start half, and the idle-second stop.
+The logic of all four is unit tested headless; the X calls themselves need a live X server,
+and no keystroke has yet landed in another application on any platform. The score
 now carries a quality term built from kept, undone and rerun verdicts, its weights and its
 penalty table are per-task settings, the remaining-quota header a provider returns is shown
 in the header, and the catalogue asks whether it changed before downloading itself, keeps
@@ -198,21 +200,31 @@ Three parts, and only the last is hard:
 3. **The injector.** OS-level events, which a webview cannot produce: macOS `CGEventPost` with
    `CGEventKeyboardSetUnicodeString` for arbitrary characters (needs Accessibility permission,
    asked for once, with a sentence saying why); Windows `SendInput` with `KEYEVENTF_UNICODE`;
-   X11 `XTEST`.
+   X11 `XTEST` through `x11-dl`, which borrows the highest keycode and remaps it for one
+   keystroke when the current layout cannot type the character. The character-to-keysym
+   mapping, the newline-to-Return mapping and the failure stages are unit tested; the X
+   calls themselves need a running X server, which this machine does not have.
 
 **"Finish by time"** is two modes. *Paced* takes the remaining characters and the time budget
 and derives characters per second from them, clamped to human bounds, so a two-minute schedule
 for 600 words lands the last character at 2:00 rather than racing or stalling. *Generated*
 sends what is already typed to the model and types on from there — the same client as the
-paraphraser with a different prompt.
+paraphraser with a different prompt. **Built:** the model is asked for roughly as many
+characters as the time left can hold at a resting pace (60 to 1200), a fence or a
+"Continuation:" label is stripped before the join, the continuation is joined with one space,
+and the run starts on the whole piece so the injected text is the finished document rather
+than a fragment.
 
 **Rails, because this is the one feature that reaches into other applications.**
 
 - a stop chord that reaches the app while another window has focus — `⌘⌥⇧S` on macOS,
   `Ctrl+Alt+Shift+S` elsewhere — plus Escape while this window has focus. A run also refuses
   to post a keystroke while QuillNot's own window has focus, because that is the one window
-  that is never the target. **Not built:** starting from the chord (the text lives in the
-  webview), and stopping after N idle seconds;
+  that is never the target. **Built:** the chord is a toggle. The view arms the editor's text
+  whenever the text or settings change and no run is live, and the chord starts that text when
+  nothing is running and stops a run when one is; arming goes through the same `start_run` as
+  the button, so the chord is not a weaker path. A run also stops itself after N idle seconds,
+  counted from the last accepted keystroke, with a deliberate pause excluded;
 - a visible state — the app is never typing invisibly — and never on by default;
 - refuse a secure field: on macOS `IsSecureEventInputEnabled()` is a hard no, so password
   prompts are untouchable;
@@ -399,7 +411,7 @@ The keystroke planner, the cancellable driver and the per-platform injector (§4
 Accessibility request, the secure-field refusal and the shortcut. Paced completion first,
 generated completion after.
 
-**Shipped on macOS and Windows.** `typer.rs` plans text into timed keystrokes: a delay per character
+**Written for macOS, Windows and X11.** `typer.rs` plans text into timed keystrokes: a delay per character
 from a narrow distribution, shorter inside a word and longer at its start, a dwell after
 `,;:` and a longer one after `.!?`, a beat at a line break, and a typo rate that types a
 neighbouring key, pauses, backspaces and retypes. A deadline is met by re-deriving the pace
@@ -419,26 +431,50 @@ guess. The rail entry stopped being dimmed.
 human cadence, stops mid-word on the shortcut and resumes, and a "finish by 0:45" run lands
 within two seconds of the target. Nothing is typed while a secure field has focus.
 
-**Verified:** ten unit tests, including the invariant that the keystrokes reproduce the text
-exactly at a 25% typo rate across forty seeds, a 600-character run landing within two seconds
-of a 45-second deadline, the clamp when a deadline is impossible, and determinism under a
-fixed seed. **Not verified:** neither injector has ever posted an event, because that needs a
-desktop session and someone watching another window.
+**Verified:** the planner's ten unit tests, including the invariant that the keystrokes
+reproduce the text exactly at a 25% typo rate across forty seeds, a 600-character run landing
+within two seconds of a 45-second deadline, the clamp when a deadline is impossible, and
+determinism under a fixed seed. Nine more cover the chord toggle, the idle watch, the
+newline and keysym mapping, the four distinct injector failure messages, and continuation
+sizing and joining; a tenth, in `prompt.rs`, pins the continuation prompt. **Not verified:**
+no injector has ever posted an event on any platform, because that needs a desktop session
+and someone watching another window.
 
 The Windows injector exists: `SendInput` with `KEYEVENTF_UNICODE`, one code unit at a time so
 the active keyboard layout cannot reinterpret the character, a surrogate pair for anything
 outside the BMP, and Return/Backspace as real virtual keys. It compiles and its encoding is
 unit-tested, but it has not typed a character into Notepad. There is no Windows equivalent of
 `IsSecureEventInputEnabled`, so the secure-field refusal is macOS-only until one is found.
-The X11 injector still does not exist; Linux reports Typer as unavailable rather than
-offering a button that does nothing. The menu asks the Rust side for `supported`, `granted`
-and `platform`, so each build shows its own directions and Linux never sees the macOS steps.
+The X11 injector exists: `XTEST` through `x11-dl`, with each keystroke mapped to a keysym
+(Latin-1 as itself, anything else in the Unicode keysym range, newline as Return) and a spare
+keycode borrowed through `XChangeKeyboardMapping` for the one keystroke when the layout cannot
+type the character, then restored. The key mapping, the keysym mapping and the four failure
+stages — display, XTest, keymap, post — are unit tested. **Not verified:** the X calls need a
+running X server and this machine has none, so the Linux injector has never posted an event
+either. X11 has no Accessibility permission and no secure-input query, so `supported` and
+`trusted` are both true there and the secure-field refusal remains macOS-only. The menu asks
+the Rust side for `supported`, `granted` and `platform`, so each build shows its own
+directions.
 
 **Since the first pass:** the stop chord in §4 is registered through
 `tauri-plugin-global-shortcut`, so it reaches the app while another window has focus, and the
 driver now stops as `unfocused` rather than posting a keystroke into QuillNot's own window.
-Still missing from §4: the start half of the chord, the idle-second stop, and the X11
-injector.
+
+The chord is now a toggle rather than a stop button. The view arms the editor's text
+(`typer_arm`) whenever the text or settings change and no run is live, and the chord starts
+that text through the same `start_run` as the button when nothing is running, or stops a live
+run when one is. The text stays armed after a run, so a run stopped in its first sentence can
+be restarted with the same chord, and emptying the editor disarms it. `chord_action(running,
+armed)` is unit tested over all four cases. A run also stops itself as `stalled` after the
+configured idle seconds, counted from the last accepted keystroke; a pause does not count,
+because it is deliberate. The idle arithmetic is tested with synthetic instants, and the
+clamp that refuses a limit under five seconds is tested too.
+
+**Generated "finish by"** is built as §4 describes: `typer_generate` asks the model for the
+ending sized to the time the existing text leaves (60 to 1200 characters), strips a fence or
+a "Continuation:" label, joins it with one space, and starts a run on the whole piece.
+Sizing, stripping, joining and the prompt are unit tested; the model call itself is untested
+here because no provider key is configured, so no continuation has been generated for real.
 
 ## 7. What the UI mirrors, and what it deliberately does not
 

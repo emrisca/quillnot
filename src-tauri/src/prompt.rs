@@ -181,6 +181,23 @@ pub fn split_blocks(text: &str, max_chars: usize) -> Vec<String> {
     blocks
 }
 
+/// Typer's generated mode: the words that come next, sized to the time left, and nothing
+/// else. The rules are stated twice, in the system and user halves, because a model that
+/// ignores one usually obeys the other.
+const CONTINUATION_SYSTEM: &str = "You continue a piece of writing from exactly where it \
+     stops. You return only the words that come next: no preamble, no explanation, no \
+     quotation marks, no markdown fence. You match the voice, tense and register of the \
+     text you were given, and you never repeat it.";
+
+pub fn continuation_prompt(text: &str, target_chars: usize) -> (String, String) {
+    let user = format!(
+        "Continue the text below with about {target_chars} more characters, and stop at the \
+         end of a sentence. Do not repeat any of the text and do not describe what you are \
+         doing.\n\nText so far:\n\n{text}"
+    );
+    (CONTINUATION_SYSTEM.to_string(), user)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +290,14 @@ mod tests {
         assert!(user.contains("formal register"));
         assert!(user.contains("Rewrite more freely"));
         assert!(user.ends_with("hello there"));
+    }
+
+    #[test]
+    fn a_continuation_prompt_asks_for_a_length_and_no_preamble() {
+        let (system, user) = continuation_prompt("The release was late", 120);
+        assert!(system.contains("only the words that come next"));
+        assert!(system.contains("never repeat it"));
+        assert!(user.contains("about 120 more characters"));
+        assert!(user.ends_with("The release was late"));
     }
 }
