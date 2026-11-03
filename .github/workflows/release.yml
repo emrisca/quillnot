@@ -1,7 +1,11 @@
 name: Release
 
-# A tag is the release. `v0.1.1` builds both macOS architectures and Windows, signs
-# the updater archives, and writes the `latest.json` the app checks against.
+# A tag is the release. `v0.2.0` builds Apple silicon and Windows, signs the updater
+# archives, and writes the `latest.json` the app checks against.
+#
+# Intel Macs are deliberately not built: the app targets Apple silicon, and every Intel
+# job is another twenty minutes of CI and another artifact nobody installs. Adding
+# `x86_64-apple-darwin` back to the matrix is all it would take.
 on:
   push:
     tags: ["v*"]
@@ -17,8 +21,6 @@ jobs:
         include:
           - platform: macos-latest
             target: aarch64-apple-darwin
-          - platform: macos-latest
-            target: x86_64-apple-darwin
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
 

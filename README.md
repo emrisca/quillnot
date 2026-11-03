@@ -41,9 +41,9 @@ entered in Settings, stored in the OS keychain and used only from Rust.
 
 ## Releases
 
-Tagging `v0.1.1` runs `.github/workflows/release.yml`, which builds macOS (Apple silicon and
-Intel) and Windows, signs the updater archives and publishes the release with the
-`latest.json` the app reads.
+Tagging a version runs `.github/workflows/release.yml`, which builds Apple silicon and
+Windows, signs the updater archives and publishes the release with the `latest.json` the app
+reads. Intel Macs are not built: the app targets Apple silicon.
 
 The signing key is a minisign pair made once with:
 
