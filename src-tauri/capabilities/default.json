@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the main window may do. The shell needs nothing beyond the core defaults yet; the OpenRouter calls are made from Rust in M2, so no HTTP permission is granted to the frontend.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

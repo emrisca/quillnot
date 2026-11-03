@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="QuillNot">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#4fa848" />
+      <stop offset="0.55" stop-color="#3d8a36" />
+      <stop offset="1" stop-color="#2f6f2a" />
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#tile)" />
+  <g
+    transform="translate(194 194) scale(26.5)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="1.35"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M20.2 4.4a5 5 0 0 0-7 0l-7 7v5.4h5.4l7-7a5 5 0 0 0 1.6-5.4z" />
+    <path d="M4 20l6.5-6.5" />
+    <path d="M14.5 10.2 12 7.7" />
+  </g>
+</svg>

@@ -1,0 +1,17 @@
+node_modules
+dist
+
+# Preview captures: useful while building, not part of the app.
+.preview/
+dist-ssr
+*.local
+.DS_Store
+
+# Rust
+src-tauri/target
+src-tauri/gen/schemas
+
+# Local secrets: an OpenRouter key or a signing key must never be committed.
+.env
+.env.*
+.secrets/
