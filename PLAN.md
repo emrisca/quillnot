@@ -259,6 +259,15 @@ run into the workspace; statistics from those rows — words processed, runs per
 used, and words saved. Settings: key, default model, default mode, theme (light/dark),
 data-directory controls, and a confirm-gated "delete history".
 
+**Shipped.** A JSON log rather than SQLite, which the plan allows: one line per run in
+`history.jsonl` beside the settings, capped at 500 rows, replaced atomically so a failed write
+leaves the old history rather than half of a new one, and one unreadable line costs only that
+line. A rewrite records both sides, the mode and the model, which is what makes reopening it
+work; a check records the text and what was found, with no result, because the checker only
+suggested. The rail's History and Statistics entries are real views over those rows, Settings
+gained a default mode and a Data card that opens the folder and deletes with a confirmation,
+and the statistics are counted from the log rather than fetched from anywhere.
+
 ### M5 · Updates and releases
 
 `tauri-plugin-updater` with a minisign keypair, endpoints pointed at

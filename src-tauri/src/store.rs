@@ -33,6 +33,8 @@ pub struct Settings {
     pub provider_models: BTreeMap<String, String>,
     /// Base URL for the "bring your own endpoint" provider.
     pub custom_base_url: Option<String>,
+    /// The rewrite mode the workspace opens in. Absent means Standard.
+    pub default_mode: Option<String>,
 }
 
 fn legacy_entry() -> Result<keyring::Entry, String> {

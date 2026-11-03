@@ -15,6 +15,7 @@
 
 mod catalog;
 mod grammar;
+mod history;
 mod openrouter;
 mod prompt;
 mod providers;
@@ -94,6 +95,47 @@ async fn grammar_check(
     model: Option<String>,
 ) -> Result<grammar::GrammarResult, String> {
     grammar::check(&app, &text, model).await
+}
+
+/* ------------------------------------------------------------------ history */
+
+#[tauri::command]
+fn list_runs(app: AppHandle) -> Result<Vec<history::Run>, String> {
+    history::list(&app)
+}
+
+#[tauri::command]
+fn delete_run(app: AppHandle, id: String) -> Result<Vec<history::Run>, String> {
+    history::delete(&app, &id)
+}
+
+#[tauri::command]
+fn clear_history(app: AppHandle) -> Result<Vec<history::Run>, String> {
+    history::clear(&app)
+}
+
+#[tauri::command]
+fn run_stats(app: AppHandle) -> Result<history::Stats, String> {
+    history::stats(&app)
+}
+
+#[tauri::command]
+fn open_data_dir(app: AppHandle) -> Result<(), String> {
+    history::open_folder(&app)
+}
+
+/// The mode the workspace opens in; `None` means Standard.
+#[tauri::command]
+fn default_mode(app: AppHandle) -> Option<String> {
+    store::read_settings(&app).default_mode
+}
+
+#[tauri::command]
+fn set_default_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let mut settings = store::read_settings(&app);
+    let mode = mode.trim().to_string();
+    settings.default_mode = if mode.is_empty() { None } else { Some(mode) };
+    store::write_settings(&app, &settings)
 }
 
 /* ---------------------------------------------------------------- providers */
@@ -197,6 +239,13 @@ pub fn run() {
             model_catalogue,
             paraphrase,
             grammar_check,
+            list_runs,
+            delete_run,
+            clear_history,
+            run_stats,
+            open_data_dir,
+            default_mode,
+            set_default_mode,
             list_providers,
             save_provider_key,
             clear_provider_key,

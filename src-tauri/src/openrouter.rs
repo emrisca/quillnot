@@ -358,6 +358,8 @@ pub async fn paraphrase_with(
     let mode = request.mode.unwrap_or_else(|| "standard".to_string());
     let strength = request.strength.unwrap_or(2).clamp(1, 4);
 
+    let started = std::time::Instant::now();
+
     // 2,500 rather than 4,000 characters per block: the free models stall far less
     // often on a smaller prompt, and a failed block costs a fraction of the time.
     let blocks = prompt::split_blocks(text, 2500);
@@ -386,11 +388,26 @@ pub async fn paraphrase_with(
         rewritten.push(body);
     }
 
-    Ok(ParaphraseResult {
+    let result = ParaphraseResult {
         text: rewritten.join("\n\n"),
         model: used,
         blocks: blocks.len(),
-    })
+    };
+
+    // Recorded only when a window exists: `--self-test` exercises the same path and
+    // must not fill the history with test runs.
+    if let Some(handle) = app {
+        crate::history::record_paraphrase(
+            handle,
+            &mode,
+            &result.model,
+            text,
+            &result.text,
+            started.elapsed().as_millis() as u64,
+        );
+    }
+
+    Ok(result)
 }
 
 /// One block, with the fallback the plan promised: the preferred model first, the

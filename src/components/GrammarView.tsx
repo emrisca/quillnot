@@ -1,18 +1,22 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { applyIssue, checkGrammar, type Issue } from "../lib/grammar";
+import { takeRestore } from "../lib/history";
 import { useConnection } from "../lib/connection";
 import { isDesktop } from "../lib/openrouter";
 import { countWords } from "../lib/text";
+import { Rail, type SideView } from "./Rail";
 
 const SAMPLE =
   "This is a sentence  with a double space, and it also has alot of small problems. " +
   "i dont think the writer really read it before sending it out. The the release notes " +
   "mention a feature that is very useful ,but nobody tested the install on macOS.";
 
-export function GrammarView() {
+export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const connection = useConnection();
-  const [text, setText] = useState("");
+  // A check opened from History arrives with the text it checked.
+  const [restored] = useState(() => takeRestore("grammar"));
+  const [text, setText] = useState(restored?.original ?? "");
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState<string | null>(null);
@@ -228,16 +232,7 @@ export function GrammarView() {
         </div>
       </div>
 
-      <aside className="rail" aria-label="Views">
-        <button type="button" className="rail__item" title="History — a later milestone">
-          <Icon name="history" size={19} />
-          <span>History</span>
-        </button>
-        <button type="button" className="rail__item" title="Statistics — a later milestone">
-          <Icon name="stats" size={19} />
-          <span>Stats</span>
-        </button>
-      </aside>
+      <Rail onOpen={onOpen} />
     </div>
   );
 }

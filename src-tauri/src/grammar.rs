@@ -77,7 +77,23 @@ impl RawPayload {
 /// The command behind the Grammar Checker view.
 pub async fn check(app: &AppHandle, text: &str, model: Option<String>) -> Result<GrammarResult, String> {
     let route = providers::resolve(app, model)?;
-    run(&route.attempts, text).await
+    let started = std::time::Instant::now();
+    let result = run(&route.attempts, text).await?;
+
+    // A check is a run like any other, so it belongs in the history and in the count
+    // of words processed. Its `result` stays empty: the checker suggested, and the
+    // person has not accepted anything yet.
+    crate::history::record_grammar(
+        app,
+        text,
+        &result.model,
+        result.issues.len(),
+        result.unlocated,
+        result.dropped,
+        started.elapsed().as_millis() as u64,
+    );
+
+    Ok(result)
 }
 
 /// The same without a window, for `--grammar` in the self-test.

@@ -301,6 +301,7 @@ mod tests {
             active_provider: active.map(str::to_string),
             provider_models,
             custom_base_url: None,
+            default_mode: None,
         }
     }
 

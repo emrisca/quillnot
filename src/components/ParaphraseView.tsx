@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { isDesktop, onDelta, paraphrase } from "../lib/openrouter";
 import { useConnection } from "../lib/connection";
 import { diffWords } from "../lib/diff";
-import { mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
+import { defaultMode, takeRestore } from "../lib/history";
+import { MODES, mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
 import { countWords } from "../lib/text";
 import { ModeTabs } from "./ModeTabs";
+import { Rail, type SideView } from "./Rail";
 
 const SAMPLE =
   "This update brings faster Mermaid diagrams that match your theme, reorderable filters in " +
@@ -14,20 +16,16 @@ const SAMPLE =
   "syntax. They are also responsive to the width of a note, and they can be zoomed and panned " +
   "when they are scaled down.";
 
-const RAIL = [
-  { key: "history", label: "History", icon: "history" },
-  { key: "compare", label: "Compare", icon: "compare" },
-  { key: "stats", label: "Statistics", icon: "stats" },
-  { key: "tone", label: "Tone", icon: "tone" },
-] as const;
-
-export function ParaphraseView() {
+export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const connection = useConnection();
-  const [mode, setMode] = useState<Mode>("standard");
+  // A run opened from History brings its own text, result and mode; the Settings
+  // default only applies to a workspace that opened empty.
+  const [restored] = useState(() => takeRestore("paraphrase"));
+  const [mode, setMode] = useState<Mode>((restored?.mode as Mode) ?? "standard");
   const [strength, setStrength] = useState(2);
-  const [input, setInput] = useState("");
-  const [output, setOutput] = useState("");
-  const [model, setModel] = useState<string | null>(null);
+  const [input, setInput] = useState(restored?.original ?? "");
+  const [output, setOutput] = useState(restored?.result ?? "");
+  const [model, setModel] = useState<string | null>(restored?.model || null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(true);
@@ -35,6 +33,14 @@ export function ParaphraseView() {
   const [tipOpen, setTipOpen] = useState(true);
 
   const live = isDesktop() && connection.connected;
+
+  useEffect(() => {
+    if (restored) return;
+    void defaultMode().then((saved) => {
+      if (saved && MODES.some((entry) => entry.id === saved)) setMode(saved as Mode);
+    });
+  }, [restored]);
+
   const pieces = useMemo(() => (output ? diffWords(input, output) : null), [input, output]);
   const inWords = countWords(input);
   const outWords = countWords(output);
@@ -223,14 +229,7 @@ export function ParaphraseView() {
         </div>
       </div>
 
-      <aside className="rail" aria-label="Views">
-        {RAIL.map((item) => (
-          <button key={item.key} type="button" className="rail__item" title={`${item.label} — a later milestone`}>
-            <Icon name={item.icon} size={19} />
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </aside>
+      <Rail onOpen={onOpen} />
     </div>
   );
 }
