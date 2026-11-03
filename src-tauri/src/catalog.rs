@@ -35,11 +35,9 @@ const ENDPOINTS_BASE: &str = "https://openrouter.ai/api/v1/models";
 /// number of requests; seventeen at once is rude to a free API.
 const CONCURRENCY: usize = 6;
 
-/// The weights, in one place. Availability is what the platform knows best, speed is
-/// where our own timing beats it, and the confidence shrink stops a single number
-/// from reading like a verdict.
-const AVAILABILITY_SHARE: f64 = 0.6;
-const SPEED_SHARE: f64 = 0.4;
+/// The confidence shrink stops a single number from reading like a verdict. The
+/// weights themselves are [`crate::store::TaskWeights`] now: they are per task, and
+/// they belong in settings rather than in this file.
 const PLATFORM_LATENCY_CEILING: f64 = 3000.0;
 const THROUGHPUT_CEILING: f64 = 150.0;
 /// Our latency ceiling is looser than the platform's: a free model that answers a
@@ -57,6 +55,11 @@ const DEMOTED_SHARE: f64 = 0.5;
 /// Auto will not act on a ranking older than this. A week-old table would keep
 /// sending runs to a model that has since gone dark.
 const CACHE_MAX_AGE: i64 = 7 * 24 * 3600;
+/// Penalties are capped so one bad afternoon cannot bury a model forever, and the
+/// whole table together cannot take more than this off a score out of 100.
+const FAILURE_CAP: f64 = 3.0;
+const REJECTION_CAP: f64 = 4.0;
+const PENALTY_CAP: f64 = 45.0;
 /// The gateway router: the one catalogue row that is not a single endpoint. It is
 /// what Auto falls back to when we have measured nothing, because a guess from the
 /// alphabet is not a measurement.
@@ -149,6 +152,15 @@ pub struct PlatformRow {
     pub uptime_window: Option<String>,
     pub latency_ms: Option<f64>,
     pub throughput: Option<f64>,
+    /// False when the model was in an earlier table and is no longer upstream. The row
+    /// is kept rather than dropped, so a pin or a fallback chain holding the id can say
+    /// what happened to it.
+    #[serde(default = "default_true")]
+    pub available: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A catalogue row as the table shows it: what the model is, what the platform reports,
@@ -172,8 +184,20 @@ pub struct RankedModel {
     pub success_rate: Option<f64>,
     /// Median of our successful calls, in milliseconds.
     pub our_latency_ms: Option<u64>,
+    /// Median time to first token on the calls that reported one.
+    pub our_ttft_ms: Option<u64>,
+    /// The quality term, from what people did with the replies, out of one.
+    pub quality: Option<f64>,
+    /// How many replies were kept, undone and rerun.
+    pub kept: usize,
+    pub undone: usize,
+    pub rerun: usize,
+    /// What the penalty table subtracted from the score.
+    pub penalty: f64,
     /// Failures in a row, newest first.
     pub streak: usize,
+    /// False when the model has disappeared from the catalogue upstream.
+    pub available: bool,
     pub pinned: bool,
     pub chosen: bool,
 }
@@ -200,6 +224,10 @@ pub struct Catalogue {
 struct RankingCache {
     /// Unix seconds.
     at: i64,
+    /// The validator from the response that produced these rows, so the next refresh can
+    /// ask whether anything changed instead of downloading the JSON again.
+    #[serde(default)]
+    etag: Option<String>,
     rows: Vec<PlatformRow>,
 }
 
@@ -299,13 +327,22 @@ fn speed(latency_ms: Option<f64>, throughput: Option<f64>) -> Option<f64> {
 /// Unknown components are left out instead of dragging the mean down: a brand-new
 /// endpoint has no 30-minute window, and ranking it last for that would be a lie
 /// about the model. `evidence` carries that uncertainty to the table.
-fn blend(availability: Option<f64>, speed: Option<f64>) -> (Option<f64>, usize) {
+fn blend(
+    availability: Option<f64>,
+    speed: Option<f64>,
+    quality: Option<f64>,
+    weights: store::TaskWeights,
+) -> (Option<f64>, usize) {
+    let weights = weights.sane();
     let parts: Vec<(f64, f64)> = [
-        (availability.map(normalise_uptime), AVAILABILITY_SHARE),
-        (speed, SPEED_SHARE),
+        (availability.map(normalise_uptime), weights.availability),
+        (speed, weights.speed),
+        (quality.map(|value| value.clamp(0.0, 1.0)), weights.quality),
     ]
     .into_iter()
-    .filter_map(|(value, weight)| value.map(|value| (value, weight)))
+    // A term with a weight of zero is not evidence, it is a decision that this task does
+    // not care about it, so it is left out of both the mean and the count.
+    .filter_map(|(value, weight)| value.filter(|_| weight > 0.0).map(|value| (value, weight)))
     .collect();
 
     if parts.is_empty() {
@@ -330,7 +367,31 @@ pub fn score(
     latency_ms: Option<f64>,
     throughput: Option<f64>,
 ) -> (Option<f64>, usize) {
-    blend(availability, speed(latency_ms, throughput))
+    blend(
+        availability,
+        speed(latency_ms, throughput),
+        None,
+        store::TaskWeights::default(),
+    )
+}
+
+/// What the penalty table subtracts from a score out of 100.
+///
+/// Each line is something a person would not forgive: a failure streak, replies they
+/// had to undo or redo, and an endpoint that has been answering 429. The counts are
+/// capped and so is the total, because an old afternoon of trouble should not follow a
+/// model forever — the streak clears on the next success, and the caps mean a model can
+/// always climb back.
+pub fn penalty(ours: &Evidence, table: store::Penalties) -> f64 {
+    let failures = ours.streak.min(FAILURE_CAP as usize) as f64 * table.failure;
+    let rejected =
+        (ours.undone as f64 + ours.rerun as f64 * 0.5).min(REJECTION_CAP) * table.rejection;
+    let limited = if ours.rate_limited > 0 {
+        table.rate_limit
+    } else {
+        0.0
+    };
+    (failures + rejected + limited).min(PENALTY_CAP)
 }
 
 /// The score with our own calls folded in.
@@ -346,9 +407,16 @@ pub fn rank(
     latency_ms: Option<f64>,
     throughput: Option<f64>,
     ours: Option<&Evidence>,
+    weights: store::TaskWeights,
+    penalties: store::Penalties,
 ) -> (Option<f64>, usize) {
     let Some(ours) = ours.filter(|evidence| evidence.runs > 0) else {
-        return score(availability, latency_ms, throughput);
+        return blend(
+            availability,
+            speed(latency_ms, throughput),
+            None,
+            weights,
+        );
     };
 
     let reported = availability.map(normalise_uptime);
@@ -366,13 +434,18 @@ pub fn rank(
         .map(|ms| (1.0 - ms as f64 / OUR_LATENCY_CEILING).clamp(0.0, 1.0));
     let speed = our_speed.or_else(|| speed(latency_ms, throughput));
 
-    let (value, evidence) = blend(availability, speed);
+    // The term the plan could not have until people started judging replies: a model
+    // whose suggestions get undone loses to one that is slower and kept.
+    let quality = ours.quality();
+
+    let (value, evidence) = blend(availability, speed, quality, weights);
     let value = value.map(|value| {
-        if ours.streak >= FAIL_STREAK {
+        let demoted = if ours.streak >= FAIL_STREAK {
             value * DEMOTED_SHARE
         } else {
             value
-        }
+        };
+        (demoted - penalty(ours, penalties)).max(0.0)
     });
     (value, evidence)
 }
@@ -417,7 +490,122 @@ pub async fn endpoints(id: &str) -> Result<Vec<EndpointRow>, String> {
 /// the whole table — the model is still listed, with less evidence behind it.
 pub async fn fetch_platform() -> Result<Vec<PlatformRow>, String> {
     let models = free_models_headless().await?;
+    Ok(platform_from_models(models).await)
+}
 
+/// What a refresh found: either the catalogue has not changed, or it has and here it is
+/// with the validator that came with it.
+pub enum Fetch {
+    Unchanged,
+    Fresh {
+        rows: Vec<PlatformRow>,
+        etag: Option<String>,
+    },
+}
+
+/// The same table, but asking upstream whether anything changed since the cache was
+/// written.
+///
+/// The catalogue is two GETs and one of them fans out to an endpoint lookup per model, so
+/// re-downloading it on every launch is the expensive part of being useful. An
+/// `If-None-Match` with the stored validator turns an unchanged catalogue into a 304 and
+/// nothing else happens: no JSON, no per-model endpoint requests.
+pub async fn fetch_platform_if_changed(etag: Option<&str>) -> Result<Fetch, String> {
+    let mut request = http::client()?
+        .get(MODELS_URL)
+        .header("Accept", "application/json");
+    if let Some(tag) = etag.map(str::trim).filter(|tag| !tag.is_empty()) {
+        request = request.header("If-None-Match", tag);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("could not reach OpenRouter: {e}"))?;
+
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(Fetch::Unchanged);
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("OpenRouter answered {status}: {}", http::clip(&body)));
+    }
+
+    let etag = response
+        .headers()
+        .get("ETag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    let body: ModelsResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("could not read OpenRouter's reply: {e}"))?;
+    let models: Vec<ModelRow> = body.data.into_iter().filter(is_free_text_model).collect();
+
+    Ok(Fetch::Fresh {
+        rows: platform_from_models(models).await,
+        etag,
+    })
+}
+
+/// The fresh table with rows that vanished upstream kept and marked unavailable.
+///
+/// Dropping them silently would lose the only local record that the model ever worked,
+/// and a pin or a fallback chain holding that id would break with no explanation. They
+/// stay, flagged, until the cache ages out.
+pub fn merge(previous: &[PlatformRow], fresh: Vec<PlatformRow>) -> Vec<PlatformRow> {
+    let mut merged: Vec<PlatformRow> = fresh
+        .into_iter()
+        .map(|mut row| {
+            row.available = true;
+            row
+        })
+        .collect();
+
+    let present: std::collections::HashSet<String> =
+        merged.iter().map(|row| row.id.clone()).collect();
+    for old in previous {
+        if present.contains(&old.id) {
+            continue;
+        }
+        let mut gone = old.clone();
+        gone.available = false;
+        merged.push(gone);
+    }
+    merged
+}
+
+/// What a refresh does to the cache, without a network: a 304 keeps the cached rows, a
+/// 200 replaces the platform's half and keeps the vanished rows flagged.
+fn apply_refresh(
+    cached: Option<RankingCache>,
+    fetched: Fetch,
+) -> (Vec<PlatformRow>, Option<String>) {
+    match fetched {
+        Fetch::Unchanged => {
+            let etag = cached.as_ref().and_then(|cache| cache.etag.clone());
+            (cached.map(|cache| cache.rows).unwrap_or_default(), etag)
+        }
+        Fetch::Fresh { rows, etag } => {
+            let previous = cached.map(|cache| cache.rows).unwrap_or_default();
+            (merge(&previous, rows), etag)
+        }
+    }
+}
+
+/// The launch refresh: one conditional request on a background task, so the AI Models
+/// table is warm before anyone opens it and a second launch costs a 304.
+pub fn refresh_on_launch(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = catalogue(&app, "paraphrase").await {
+            eprintln!("catalogue refresh: {err}");
+        }
+    });
+}
+
+async fn platform_from_models(models: Vec<ModelRow>) -> Vec<PlatformRow> {
     let rows: Vec<PlatformRow> = futures_util::stream::iter(models)
         .map(|model| async move {
             let endpoints = endpoints(&model.id).await.unwrap_or_default();
@@ -444,13 +632,14 @@ pub async fn fetch_platform() -> Result<Vec<PlatformRow>, String> {
                 uptime_window: uptime_window.map(str::to_string),
                 latency_ms,
                 throughput,
+                available: true,
             }
         })
         .buffer_unordered(CONCURRENCY)
         .collect()
         .await;
 
-    Ok(rows)
+    rows
 }
 
 /// Folds what we measured into what the platform reported, sorts the table, and says
@@ -472,7 +661,10 @@ fn decorate(
                 row.latency_ms,
                 row.throughput,
                 Some(&evidence),
+                settings.weights_for(task),
+                settings.penalties(),
             );
+            let penalty = penalty(&evidence, settings.penalties());
 
             RankedModel {
                 id: row.id,
@@ -488,7 +680,14 @@ fn decorate(
                 runs: evidence.runs,
                 success_rate: evidence.success_rate(),
                 our_latency_ms: evidence.median_ms,
+                our_ttft_ms: evidence.median_ttft_ms,
+                quality: evidence.quality(),
+                kept: evidence.kept,
+                undone: evidence.undone,
+                rerun: evidence.rerun,
+                penalty,
                 streak: evidence.streak,
+                available: row.available,
                 pinned: false,
                 chosen: false,
             }
@@ -547,7 +746,7 @@ fn cache_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     store::ranking_cache_path(app)
 }
 
-fn read_cache(app: &AppHandle) -> Option<Vec<PlatformRow>> {
+fn read_cache(app: &AppHandle) -> Option<RankingCache> {
     let path = cache_path(app).ok()?;
     let bytes = std::fs::read(path).ok()?;
     let cache: RankingCache = serde_json::from_slice(&bytes).ok()?;
@@ -559,10 +758,10 @@ fn read_cache(app: &AppHandle) -> Option<Vec<PlatformRow>> {
     if now.saturating_sub(cache.at) > CACHE_MAX_AGE {
         return None;
     }
-    Some(cache.rows)
+    Some(cache)
 }
 
-fn write_cache(app: &AppHandle, rows: &[PlatformRow]) {
+fn write_cache(app: &AppHandle, rows: &[PlatformRow], etag: Option<String>) {
     let written = (|| -> Result<(), String> {
         let path = cache_path(app)?;
         let now = std::time::SystemTime::now()
@@ -571,6 +770,7 @@ fn write_cache(app: &AppHandle, rows: &[PlatformRow]) {
             .unwrap_or(0);
         let bytes = serde_json::to_vec(&RankingCache {
             at: now,
+            etag,
             rows: rows.to_vec(),
         })
         .map_err(|e| e.to_string())?;
@@ -582,20 +782,40 @@ fn write_cache(app: &AppHandle, rows: &[PlatformRow]) {
 }
 
 /// The table for one task, freshly fetched and cached.
+///
+/// The fetch is conditional on the validator the last refresh stored, so a catalogue
+/// that has not changed costs one 304 rather than the whole table. A failure with a
+/// usable cache falls back to it instead of showing an empty table.
 pub async fn catalogue(app: &AppHandle, task: &str) -> Result<Catalogue, String> {
     let task = normalise_task(task);
-    let platform = fetch_platform().await?;
-    write_cache(app, &platform);
+    let settings = store::read_settings(app);
+    let cached = read_cache(app);
+    let etag = cached.as_ref().and_then(|cache| cache.etag.clone());
+
+    let platform = match fetch_platform_if_changed(etag.as_deref()).await {
+        Ok(fetched) => {
+            let (rows, etag) = apply_refresh(cached, fetched);
+            write_cache(app, &rows, etag);
+            rows
+        }
+        Err(err) => match cached {
+            Some(cache) => {
+                eprintln!("catalogue: {err}");
+                cache.rows
+            }
+            None => return Err(err),
+        },
+    };
 
     let samples = samples::load(app).unwrap_or_default();
-    Ok(decorate(platform, &samples, &task, &store::read_settings(app)))
+    Ok(decorate(platform, &samples, &task, &settings))
 }
 
 /// The last ranking this app measured, with today's samples and the current settings
 /// folded in. None when there is no usable cache — Auto then leaves the choice to the
 /// provider's configured model.
 pub fn ranked_from_cache(app: &AppHandle, task: &str) -> Option<Catalogue> {
-    let platform = read_cache(app)?;
+    let platform = read_cache(app)?.rows;
     let samples = samples::load(app).unwrap_or_default();
     let task = normalise_task(task);
     Some(decorate(
@@ -661,6 +881,7 @@ mod tests {
             uptime_window: uptime.map(|_| "1d".to_string()),
             latency_ms: None,
             throughput: None,
+            available: true,
         }
     }
 
@@ -671,6 +892,27 @@ mod tests {
             task: samples::PARAPHRASE.to_string(),
             ok,
             ms,
+            ..Sample {
+                at: 0,
+                model: String::new(),
+                task: String::new(),
+                ok: false,
+                ms: 0,
+                provider: None,
+                ttft_ms: None,
+                tokens_in: None,
+                tokens_out: None,
+                status: None,
+                outcome: None,
+            }
+        }
+    }
+
+    /// A sample the person has judged, which is what the quality term is built from.
+    fn judged(at: i64, model: &str, outcome: &str) -> Sample {
+        Sample {
+            outcome: Some(outcome.to_string()),
+            ..sample(at, model, true, 500)
         }
     }
 
@@ -680,7 +922,44 @@ mod tests {
             ok,
             streak,
             median_ms: Some(median),
+            ..Evidence::default()
         }
+    }
+
+    /// Settings that change only the weights, so a test of the weights says nothing
+    /// else by accident.
+    fn weights_for(task: &str, availability: f64, speed: f64, quality: f64) -> store::Settings {
+        let mut weights = std::collections::BTreeMap::new();
+        weights.insert(
+            task.to_string(),
+            store::TaskWeights {
+                availability,
+                speed,
+                quality,
+            },
+        );
+        store::Settings {
+            weights,
+            ..store::Settings::default()
+        }
+    }
+
+    /// The ranking with default weights and penalties: the tests that predate the term
+    /// are about the values in the log, not about the settings.
+    fn rank(
+        availability: Option<f64>,
+        latency_ms: Option<f64>,
+        throughput: Option<f64>,
+        ours: Option<&Evidence>,
+    ) -> (Option<f64>, usize) {
+        super::rank(
+            availability,
+            latency_ms,
+            throughput,
+            ours,
+            store::TaskWeights::default(),
+            store::Penalties::default(),
+        )
     }
 
     #[test]
@@ -950,5 +1229,189 @@ mod tests {
         };
         let catalogue = decorate(vec![platform("aaa/only", Some(1.0))], &[], samples::PARAPHRASE, &off);
         assert!(!catalogue.auto);
+    }
+
+    #[test]
+    fn a_kept_reply_outranks_an_undone_one() {
+        let platform = vec![
+            platform("aaa/undone", Some(1.0)),
+            platform("zzz/kept", Some(1.0)),
+        ];
+        let samples = vec![
+            judged(4, "aaa/undone", samples::UNDONE),
+            judged(3, "aaa/undone", samples::UNDONE),
+            judged(2, "zzz/kept", samples::KEPT),
+            judged(1, "zzz/kept", samples::KEPT),
+        ];
+        let catalogue = decorate(
+            platform,
+            &samples,
+            samples::PARAPHRASE,
+            &store::Settings::default(),
+        );
+
+        assert_eq!(catalogue.rows[0].id, "zzz/kept");
+        assert_eq!(catalogue.rows[0].quality, Some(1.0));
+        assert_eq!(catalogue.rows[1].quality, Some(0.0));
+    }
+
+    #[test]
+    fn a_reply_that_was_rerun_scores_between_kept_and_undone() {
+        let platform = vec![
+            platform("aaa/kept", Some(1.0)),
+            platform("bbb/rerun", Some(1.0)),
+            platform("ccc/undone", Some(1.0)),
+        ];
+        let samples = vec![
+            judged(6, "aaa/kept", samples::KEPT),
+            judged(5, "bbb/rerun", samples::RERUN),
+            judged(4, "ccc/undone", samples::UNDONE),
+        ];
+        let catalogue = decorate(
+            platform,
+            &samples,
+            samples::PARAPHRASE,
+            &store::Settings::default(),
+        );
+
+        let order: Vec<&str> = catalogue.rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(order, vec!["aaa/kept", "bbb/rerun", "ccc/undone"]);
+    }
+
+    #[test]
+    fn the_settings_weights_change_the_order() {
+        let mut reliable = platform("aaa/reliable", Some(1.0));
+        reliable.latency_ms = None;
+        let mut quick = platform("zzz/quick", Some(0.5));
+        quick.latency_ms = Some(100.0);
+
+        let by_uptime = decorate(
+            vec![reliable.clone(), quick.clone()],
+            &[],
+            samples::PARAPHRASE,
+            &weights_for(samples::PARAPHRASE, 1.0, 0.0, 0.0),
+        );
+        assert_eq!(by_uptime.rows[0].id, "aaa/reliable");
+
+        let by_speed = decorate(
+            vec![reliable, quick],
+            &[],
+            samples::PARAPHRASE,
+            &weights_for(samples::PARAPHRASE, 0.0, 1.0, 0.0),
+        );
+        assert_eq!(by_speed.rows[0].id, "zzz/quick");
+    }
+
+    #[test]
+    fn the_penalty_table_moves_a_repeatedly_rejected_model_down() {
+        let platform = vec![
+            platform("aaa/rejected", Some(1.0)),
+            platform("zzz/kept", Some(1.0)),
+        ];
+        let samples = vec![
+            judged(5, "aaa/rejected", samples::UNDONE),
+            judged(4, "aaa/rejected", samples::UNDONE),
+            judged(3, "aaa/rejected", samples::UNDONE),
+            judged(2, "zzz/kept", samples::KEPT),
+        ];
+
+        let strict = decorate(
+            platform.clone(),
+            &samples,
+            samples::PARAPHRASE,
+            &store::Settings::default(),
+        );
+        assert_eq!(strict.rows[0].id, "zzz/kept");
+        let rejected = strict
+            .rows
+            .iter()
+            .find(|row| row.id == "aaa/rejected")
+            .expect("still listed");
+        assert!(rejected.penalty > 0.0, "the table fined it");
+
+        // With the rejection penalty switched off the same model scores higher than it
+        // does under the table, which is the penalty doing its job.
+        let lenient = store::Settings {
+            penalties: Some(store::Penalties {
+                rejection: 0.0,
+                ..store::Penalties::default()
+            }),
+            ..store::Settings::default()
+        };
+        let without = decorate(platform, &samples, samples::PARAPHRASE, &lenient);
+        let same = without
+            .rows
+            .iter()
+            .find(|row| row.id == "aaa/rejected")
+            .expect("still listed");
+        assert_eq!(same.penalty, 0.0);
+        assert!(
+            same.score.unwrap() > rejected.score.unwrap(),
+            "lenient {} should beat strict {}",
+            same.score.unwrap(),
+            rejected.score.unwrap()
+        );
+    }
+
+    #[test]
+    fn an_unchanged_catalogue_is_a_cache_hit() {
+        let cached = RankingCache {
+            at: 1,
+            etag: Some("\"v1\"".to_string()),
+            rows: vec![platform("a/one", Some(1.0)), platform("b/two", Some(0.9))],
+        };
+
+        let (rows, etag) = apply_refresh(Some(cached), Fetch::Unchanged);
+        assert_eq!(rows.len(), 2, "the cached rows are used as they are");
+        assert_eq!(rows[0].id, "a/one");
+        assert_eq!(rows[1].id, "b/two");
+        assert_eq!(etag.as_deref(), Some("\"v1\""), "the validator is kept");
+    }
+
+    #[test]
+    fn a_removed_model_is_kept_and_marked_unavailable() {
+        let cached = RankingCache {
+            at: 1,
+            etag: Some("\"v1\"".to_string()),
+            rows: vec![
+                platform("gone/model", Some(1.0)),
+                platform("stay/model", Some(1.0)),
+            ],
+        };
+        let fresh = vec![platform("stay/model", Some(0.9))];
+
+        let (rows, etag) = apply_refresh(
+            Some(cached),
+            Fetch::Fresh {
+                rows: fresh,
+                etag: Some("\"v2\"".to_string()),
+            },
+        );
+
+        assert_eq!(etag.as_deref(), Some("\"v2\""));
+        let gone = rows
+            .iter()
+            .find(|row| row.id == "gone/model")
+            .expect("a vanished model is kept, not dropped");
+        assert!(!gone.available);
+        let stay = rows
+            .iter()
+            .find(|row| row.id == "stay/model")
+            .expect("the live one is still there");
+        assert!(stay.available);
+        assert_eq!(stay.uptime, Some(0.9), "the fresh numbers replace the old ones");
+    }
+
+    #[test]
+    fn the_table_says_which_rows_have_left_the_catalogue() {
+        let mut gone = platform("gone/model", Some(1.0));
+        gone.available = false;
+        let catalogue = decorate(
+            vec![gone],
+            &[],
+            samples::PARAPHRASE,
+            &store::Settings::default(),
+        );
+        assert!(!catalogue.rows[0].available);
     }
 }

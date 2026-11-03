@@ -6,6 +6,7 @@ import { compareSentences, diffWords } from "../lib/diff";
 import { exportMarkdown, fileName, fileStem, markdown } from "../lib/export";
 import { defaultMode, takeRestore } from "../lib/history";
 import { MODES, mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
+import { recordOutcome } from "../lib/samples";
 import { countWords } from "../lib/text";
 import { isSingleWord, rephraseSentence, sentenceAt, splitSentences, wordSynonyms } from "../lib/span";
 import { ModeTabs } from "./ModeTabs";
@@ -93,6 +94,9 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setCopied(false);
     setSaved(null);
     setSel(null);
+    // A second run over a reply nobody copied is a "not quite": worse than keeping it,
+    // better than undoing it, and the ranking treats the three differently.
+    if (output && model) void recordOutcome(model, "paraphrase", "rerun");
 
     try {
       if (!live) {
@@ -125,6 +129,8 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
   }
 
   function clearAll() {
+    // Throwing a reply away is an undo: it answered, and the answer was not wanted.
+    if (output && model) void recordOutcome(model, "paraphrase", "undone");
     setInput("");
     setOutput("");
     setError(null);
@@ -136,6 +142,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
   async function copy() {
     if (!output) return;
     await navigator.clipboard.writeText(output);
+    void recordOutcome(model, "paraphrase", "kept");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
@@ -281,6 +288,8 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
 
   async function exportFile() {
     if (!output) return;
+    // Exporting is keeping it, in the one way this app can observe.
+    void recordOutcome(model, "paraphrase", "kept");
     try {
       const path = await exportMarkdown(
         fileStem(mode),

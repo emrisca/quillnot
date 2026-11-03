@@ -11,6 +11,12 @@
 //! row is what demotes a model, and the first success after that clears the streak.
 //! Recording never fails a run — a full disk costs a sample, not a rewrite.
 //!
+//! A sample also carries what the ranking needs and the platform does not report:
+//! which provider answered, how long the first token took, how many tokens went each
+//! way, the HTTP status, and — once the person has decided — whether they kept the
+//! reply, undid it, or ran it again. That last one is the quality term, and it cannot
+//! be bought or synthesised: it is the only signal that says the model was *right*.
+//!
 //! The log is one JSON line per call beside the history, with the same guarantees:
 //! newest first, capped, replaced atomically, and one unreadable line costs only that
 //! line.
@@ -34,6 +40,19 @@ pub const GRAMMAR: &str = "grammar";
 
 pub const TASKS: [&str; 2] = [PARAPHRASE, GRAMMAR];
 
+/// What the person did with a reply. A kept reply is the model being right; an undone
+/// one is the model being wrong in a way the person had to fix; a rerun is "close, try
+/// again", which is worth more than an undo and much less than a keep.
+pub const KEPT: &str = "kept";
+pub const UNDONE: &str = "undone";
+pub const RERUN: &str = "rerun";
+
+/// What a kept reply is worth, a rerun, and an undo, out of one. Rerun sits in the
+/// middle because the text was usable enough to iterate on rather than discard.
+const KEPT_VALUE: f64 = 1.0;
+const RERUN_VALUE: f64 = 0.4;
+const UNDONE_VALUE: f64 = 0.0;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sample {
@@ -43,6 +62,35 @@ pub struct Sample {
     pub task: String,
     pub ok: bool,
     pub ms: u64,
+    /// The provider that answered: a host for a plain endpoint, or the host of the
+    /// base URL a provider was configured with. Older lines have none.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Time to the first token, which is when a rewrite starts to feel answered.
+    #[serde(default)]
+    pub ttft_ms: Option<u64>,
+    #[serde(default)]
+    pub tokens_in: Option<u64>,
+    #[serde(default)]
+    pub tokens_out: Option<u64>,
+    /// The HTTP status, when there was one. A 429 is evidence about the endpoint that
+    /// an `ok: false` alone does not carry.
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// `kept`, `undone` or `rerun`, once the person has decided. `None` means the call
+    /// worked and nobody has said whether it was right.
+    #[serde(default)]
+    pub outcome: Option<String>,
+}
+
+/// Everything about a call that is not model, task, success or duration.
+#[derive(Debug, Clone, Default)]
+pub struct CallMeta {
+    pub provider: Option<String>,
+    pub ttft_ms: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub status: Option<u16>,
 }
 
 /// What the log says about one model on one task.
@@ -57,6 +105,14 @@ pub struct Evidence {
     /// Median of the calls that worked. A failed call is not slow, it is absent, so
     /// its time is left out.
     pub median_ms: Option<u64>,
+    /// Median time to first token, on the calls that reported one.
+    pub median_ttft_ms: Option<u64>,
+    /// How the person judged the replies that worked.
+    pub kept: usize,
+    pub undone: usize,
+    pub rerun: usize,
+    /// Calls that came back 429. The ranking fines an endpoint that keeps doing it.
+    pub rate_limited: usize,
 }
 
 impl Evidence {
@@ -67,6 +123,26 @@ impl Evidence {
         } else {
             Some(self.ok as f64 / self.runs as f64)
         }
+    }
+
+    /// Replies the person actually judged. A sample nobody has decided about says
+    /// nothing about quality, so it is not counted either way.
+    pub fn judged(&self) -> usize {
+        self.kept + self.undone + self.rerun
+    }
+
+    /// The quality term out of one: the mean of the verdicts, or None before anyone
+    /// has judged this model on this task. Undecided calls are left out rather than
+    /// counted as good, because that would flatter a model nobody has used.
+    pub fn quality(&self) -> Option<f64> {
+        let judged = self.judged();
+        if judged == 0 {
+            return None;
+        }
+        let total = self.kept as f64 * KEPT_VALUE
+            + self.rerun as f64 * RERUN_VALUE
+            + self.undone as f64 * UNDONE_VALUE;
+        Some(total / judged as f64)
     }
 }
 
@@ -113,7 +189,7 @@ fn write(app: &AppHandle, samples: &[Sample]) -> Result<(), String> {
     std::fs::rename(&temp, &path).map_err(|e| format!("could not replace the samples: {e}"))
 }
 
-pub fn record(app: &AppHandle, model: &str, task: &str, ok: bool, ms: u64) {
+pub fn record(app: &AppHandle, model: &str, task: &str, ok: bool, ms: u64, meta: CallMeta) {
     if model.trim().is_empty() {
         return;
     }
@@ -123,6 +199,12 @@ pub fn record(app: &AppHandle, model: &str, task: &str, ok: bool, ms: u64) {
         task: task.to_string(),
         ok,
         ms,
+        provider: meta.provider,
+        ttft_ms: meta.ttft_ms,
+        tokens_in: meta.tokens_in,
+        tokens_out: meta.tokens_out,
+        status: meta.status,
+        outcome: None,
     };
 
     let written = load(app).and_then(|mut samples| {
@@ -133,6 +215,53 @@ pub fn record(app: &AppHandle, model: &str, task: &str, ok: bool, ms: u64) {
 
     if let Err(err) = written {
         eprintln!("samples: {err}");
+    }
+}
+
+/// The plain-logic half of recording a verdict, so it can be tested without a window.
+///
+/// The newest sample for this model and task that nobody has judged is the one the
+/// verdict belongs to: runs are recorded newest first, so that is the call the person
+/// just looked at. A second verdict on the same call is ignored rather than overwriting
+/// the first, because the first is what they actually did.
+pub fn apply_outcome(samples: &mut [Sample], model: &str, task: &str, outcome: &str) -> bool {
+    if !matches!(outcome, KEPT | UNDONE | RERUN) {
+        return false;
+    }
+    let found = samples
+        .iter_mut()
+        .find(|sample| sample.model == model && sample.task == task && sample.outcome.is_none());
+    match found {
+        Some(sample) => {
+            sample.outcome = Some(outcome.to_string());
+            true
+        }
+        None => false,
+    }
+}
+
+/// Records what the person did with the newest reply from this model on this task.
+/// Returns whether there was a sample to judge.
+pub fn set_outcome(app: &AppHandle, model: &str, task: &str, outcome: &str) -> bool {
+    let Ok(mut samples) = load(app) else {
+        return false;
+    };
+    if !apply_outcome(&mut samples, model, task, outcome) {
+        return false;
+    }
+    if let Err(err) = write(app, &samples) {
+        eprintln!("samples: {err}");
+        return false;
+    }
+    true
+}
+
+fn median(values: &mut [u64]) -> Option<u64> {
+    values.sort_unstable();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values[values.len() / 2])
     }
 }
 
@@ -150,11 +279,19 @@ pub fn evidence(samples: &[Sample], model: &str, task: &str) -> Evidence {
     let streak = mine.iter().take_while(|sample| !sample.ok).count();
 
     let mut times: Vec<u64> = mine.iter().filter(|sample| sample.ok).map(|sample| sample.ms).collect();
-    times.sort_unstable();
-    let median_ms = if times.is_empty() {
-        None
-    } else {
-        Some(times[times.len() / 2])
+    let median_ms = median(&mut times);
+
+    let mut ttfts: Vec<u64> = mine
+        .iter()
+        .filter(|sample| sample.ok)
+        .filter_map(|sample| sample.ttft_ms)
+        .collect();
+    let median_ttft_ms = median(&mut ttfts);
+
+    let count = |outcome: &str| {
+        mine.iter()
+            .filter(|sample| sample.outcome.as_deref() == Some(outcome))
+            .count()
     };
 
     Evidence {
@@ -162,6 +299,14 @@ pub fn evidence(samples: &[Sample], model: &str, task: &str) -> Evidence {
         ok,
         streak,
         median_ms,
+        median_ttft_ms,
+        kept: count(KEPT),
+        undone: count(UNDONE),
+        rerun: count(RERUN),
+        rate_limited: mine
+            .iter()
+            .filter(|sample| sample.status == Some(429))
+            .count(),
     }
 }
 
@@ -190,6 +335,19 @@ mod tests {
             task: task.to_string(),
             ok,
             ms,
+            provider: Some("openrouter.ai".into()),
+            ttft_ms: None,
+            tokens_in: None,
+            tokens_out: None,
+            status: None,
+            outcome: None,
+        }
+    }
+
+    fn judged(at: i64, model: &str, outcome: &str) -> Sample {
+        Sample {
+            outcome: Some(outcome.to_string()),
+            ..sample(at, model, PARAPHRASE, true, 500)
         }
     }
 
@@ -268,5 +426,93 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map["a"], evidence(&log, "a", PARAPHRASE));
         assert_eq!(map["b"].runs, 1);
+    }
+
+    #[test]
+    fn an_older_line_without_the_new_fields_still_parses() {
+        let line = "{\"at\":7,\"model\":\"m\",\"task\":\"paraphrase\",\"ok\":true,\"ms\":512}";
+        let parsed: Sample = serde_json::from_str(line).expect("a 0.2.2 sample still parses");
+        assert_eq!(parsed.provider, None);
+        assert_eq!(parsed.outcome, None);
+        assert_eq!(parsed.status, None);
+    }
+
+    #[test]
+    fn a_sample_records_what_the_call_cost_and_where_it_went() {
+        let meta = CallMeta {
+            provider: Some("api.groq.com".into()),
+            ttft_ms: Some(180),
+            tokens_in: Some(220),
+            tokens_out: Some(190),
+            status: Some(200),
+        };
+        let log = vec![Sample {
+            provider: meta.provider.clone(),
+            ttft_ms: meta.ttft_ms,
+            tokens_in: meta.tokens_in,
+            tokens_out: meta.tokens_out,
+            status: meta.status,
+            ..sample(1, "m", GRAMMAR, true, 900)
+        }];
+        let found = evidence(&log, "m", GRAMMAR);
+        assert_eq!(found.median_ttft_ms, Some(180));
+        assert_eq!(found.rate_limited, 0);
+
+        let mut limited = log.clone();
+        limited[0].status = Some(429);
+        assert_eq!(evidence(&limited, "m", GRAMMAR).rate_limited, 1);
+    }
+
+    #[test]
+    fn quality_is_the_mean_of_the_verdicts_and_none_before_any() {
+        let unjudged = vec![sample(1, "m", PARAPHRASE, true, 100)];
+        assert_eq!(evidence(&unjudged, "m", PARAPHRASE).quality(), None);
+
+        let log = vec![
+            judged(4, "m", KEPT),
+            judged(3, "m", KEPT),
+            judged(2, "m", RERUN),
+            judged(1, "m", UNDONE),
+            sample(0, "m", PARAPHRASE, true, 100),
+        ];
+        let found = evidence(&log, "m", PARAPHRASE);
+        assert_eq!(found.judged(), 4);
+        // (1 + 1 + 0.4 + 0) / 4
+        assert!((found.quality().unwrap() - 0.6).abs() < 1e-9);
+        // The undecided call is not counted as good or bad.
+        assert_eq!(found.runs, 5);
+    }
+
+    #[test]
+    fn a_kept_reply_outranks_an_undone_one_on_quality_alone() {
+        let kept = vec![judged(3, "a", KEPT), judged(2, "a", KEPT)];
+        let undone = vec![judged(3, "b", UNDONE), judged(2, "b", UNDONE)];
+        let a = evidence(&kept, "a", PARAPHRASE).quality().unwrap();
+        let b = evidence(&undone, "b", PARAPHRASE).quality().unwrap();
+        assert!(a > b, "{a} should beat {b}");
+    }
+
+    #[test]
+    fn a_verdict_lands_on_the_newest_unjudged_call_and_only_once() {
+        let mut log = vec![
+            judged(5, "m", KEPT),
+            sample(4, "m", PARAPHRASE, true, 300),
+            sample(1, "m", PARAPHRASE, true, 300),
+        ];
+        assert!(apply_outcome(&mut log, "m", PARAPHRASE, UNDONE));
+        assert_eq!(log[1].outcome.as_deref(), Some(UNDONE));
+        assert_eq!(log[2].outcome, None, "only the newest call is judged");
+
+        // A second verdict has nothing left to attach to at the top.
+        assert!(apply_outcome(&mut log, "m", PARAPHRASE, KEPT));
+        assert_eq!(log[2].outcome.as_deref(), Some(KEPT));
+        assert_eq!(log[1].outcome.as_deref(), Some(UNDONE), "the first verdict stands");
+    }
+
+    #[test]
+    fn an_unknown_verdict_is_refused() {
+        let mut log = vec![sample(1, "m", PARAPHRASE, true, 100)];
+        assert!(!apply_outcome(&mut log, "m", PARAPHRASE, "liked"));
+        assert_eq!(log[0].outcome, None);
     }
 }

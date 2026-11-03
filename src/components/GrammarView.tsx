@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../icons";
 import { applyIssue, checkGrammar, onCheckProgress, type Issue } from "../lib/grammar";
 import { takeRestore } from "../lib/history";
+import { recordOutcome } from "../lib/samples";
 import { useConnection } from "../lib/connection";
 import { isDesktop } from "../lib/openrouter";
 import { countWords } from "../lib/text";
@@ -103,6 +104,8 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
     if (issue.unique === false) return;
     const next = applyIssue(text, issue);
     setText(next);
+    // Accepting a fix is the checker having been right.
+    void recordOutcome(model, "grammar", "kept");
     // Re-run so the remaining cards point at the text that now exists, not at
     // offsets from the version the model saw.
     setIssues(issues ? issues.filter((item) => item.id !== issue.id).map((item) => shift(item, issue)) : null);
@@ -217,6 +220,7 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
                       let next = text;
                       for (const issue of [...applyable].sort((a, b) => b.start - a.start)) next = applyIssue(next, issue);
                       setText(next);
+                      void recordOutcome(model, "grammar", "kept");
                       setIssues((issues ?? []).filter((issue) => issue.unique === false));
                     }}
                   >

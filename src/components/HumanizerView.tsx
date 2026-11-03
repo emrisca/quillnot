@@ -10,6 +10,7 @@ import {
 } from "../lib/humanizer";
 import { isDesktop, onDelta } from "../lib/openrouter";
 import { mockParaphrase } from "../lib/paraphrase";
+import { recordOutcome } from "../lib/samples";
 import { countWords } from "../lib/text";
 
 const SAMPLE =
@@ -95,6 +96,9 @@ export function HumanizerView() {
     setBusy(true);
     setError(null);
     setCopied(false);
+    // Running again over a reply nobody copied is the person saying "not quite", which
+    // the ranking counts for less than a keep and more than an undo.
+    if (output && model) void recordOutcome(model, "paraphrase", "rerun");
 
     try {
       if (!live) {
@@ -127,6 +131,8 @@ export function HumanizerView() {
   async function copy() {
     if (!output) return;
     await navigator.clipboard.writeText(output);
+    // Copying is the closest thing to "I am using this" that a desktop app can see.
+    void recordOutcome(model, "paraphrase", "kept");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
@@ -159,6 +165,7 @@ export function HumanizerView() {
                   aria-label="Clear text"
                   disabled={busy}
                   onClick={() => {
+                    if (output && model) void recordOutcome(model, "paraphrase", "undone");
                     setInput("");
                     setOutput("");
                     setError(null);

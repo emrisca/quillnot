@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../icons";
+import { recordOutcome } from "../lib/samples";
 import { countWords } from "../lib/text";
 import { FORMALITY, LANGUAGES, translate, type Formality } from "../lib/translate";
 
@@ -33,6 +34,7 @@ export function TranslateView() {
     setBusy(true);
     setError(null);
     setCopied(false);
+    if (output && model) void recordOutcome(model, "paraphrase", "rerun");
     setOutput("");
     setModel(null);
     try {
@@ -49,6 +51,7 @@ export function TranslateView() {
   async function copy() {
     if (!output) return;
     await navigator.clipboard.writeText(output);
+    void recordOutcome(model, "paraphrase", "kept");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
@@ -114,6 +117,7 @@ export function TranslateView() {
                   aria-label="Clear text"
                   disabled={busy}
                   onClick={() => {
+                    if (output && model) void recordOutcome(model, "paraphrase", "undone");
                     setInput("");
                     setOutput("");
                     setError(null);

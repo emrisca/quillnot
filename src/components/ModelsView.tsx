@@ -240,6 +240,9 @@ export function ModelsView() {
                     </span>
                   </th>
                 ))}
+                <th className="mnum" title="Share of judged replies kept, and how many were kept or undone">
+                  Kept
+                </th>
                 <th>Evidence</th>
               </tr>
             </thead>
@@ -255,6 +258,14 @@ export function ModelsView() {
                     <span className="mname">{row.name ?? row.id}</span>
                     <span className="mid"> {row.id}</span>
                     {row.chosen ? <span className="chip chip--live">Auto</span> : null}
+                    {row.available === false ? (
+                      <span
+                        className="mfail"
+                        title="This model was in an earlier catalogue and OpenRouter no longer lists it. Its measurements stay until the cache ages out."
+                      >
+                        gone
+                      </span>
+                    ) : null}
                     {row.streak > 0 ? (
                       <span
                         className="mfail"
@@ -299,6 +310,14 @@ export function ModelsView() {
                     ) : null}
                   </td>
                   <td className={`mnum${row.runs === 0 ? " mdash" : ""}`}>{row.runs || "—"}</td>
+                  <td className={`mnum${row.quality === null ? " mdash" : ""}`}>
+                    {row.quality === null ? "—" : `${Math.round(row.quality * 100)}%`}
+                    {row.kept + row.undone + row.rerun > 0 ? (
+                      <span className="mwindow">
+                        {row.kept}k {row.undone}u
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="mnum">
                     <span className="mscore">
                       <span className="mscore__bar">
@@ -311,9 +330,15 @@ export function ModelsView() {
                     </span>
                   </td>
                   <td>
-                    <span className="mevidence" title={`${row.evidence} of 2 signals reported`}>
+                    <span
+                      className="mevidence"
+                      title={`${row.evidence} of 3 signals reported${
+                        row.penalty > 0 ? `, ${Math.round(row.penalty)} points of penalties` : ""
+                      }`}
+                    >
                       <i className={row.evidence >= 1 ? "on" : ""} />
                       <i className={row.evidence >= 2 ? "on" : ""} />
+                      <i className={row.evidence >= 3 ? "on" : ""} />
                     </span>
                   </td>
                 </tr>

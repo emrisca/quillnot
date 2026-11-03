@@ -8,10 +8,12 @@ has, and their calls are billed to their own credits.
 Status: **M8 shipped, with the gaps each milestone names.** The shell, both tools against
 live free models, the verified grammar checker, local history and statistics, the provider
 list, the updater, the polish pass, the catalogue's per-call ranking and Typer all exist.
-What is missing is in three places. Typer has no X11 injector and no generated "finish by"
-mode; macOS and Windows both type. The score has no quality term, because a sample records
-only whether a call worked and how long it took. The catalogue caches its table but sends
-no conditional request and is not fetched at launch. What is unproven is proof rather than
+What is missing is in one place. Typer has no X11 injector, no generated "finish by" mode,
+no start half of its chord and no idle-second stop; macOS and Windows both type. The score
+now carries a quality term built from kept, undone and rerun verdicts, its weights and its
+penalty table are per-task settings, the remaining-quota header a provider returns is shown
+in the header, and the catalogue asks whether it changed before downloading itself, keeps
+rows that vanish upstream and refreshes at launch. What is unproven is proof rather than
 code: Typer has never posted a keystroke on a desktop with Accessibility granted, and no
 update has installed over a previous version.
 
@@ -57,8 +59,10 @@ built around limits rather than around a spinner:
 - one request at a time per block, then a **fallback chain** — if the chosen model refuses,
   the next free model in the picker is tried before the user sees an error (built);
 - exponential backoff on 429/5xx, and the remaining-requests header surfaced in the UI —
-  **not built**: the retry between attempts is a fixed 700 ms, and `Retry-After` is quoted
-  back in the error message rather than waited on;
+  **built**: the wait before the next provider doubles from 700 ms to a cap of five
+  seconds, and the remaining-request count a provider returns appears in the header after
+  every call. `Retry-After` is still quoted back in the error message rather than waited
+  on, because moving to the next model is usually better than stalling on this one;
 - long text is chunked on paragraph boundaries and reassembled, because a 12k-word document in
   one call will both time out and burn the daily quota;
 - streaming, so a slow free model still shows progress instead of an apparently hung window.
@@ -129,10 +133,12 @@ means no evidence, never a bad score**.
 zero-priced model with at least one endpoint that streams text, cached in the data directory
 and refreshed whenever the AI Models view opens.
 
-**Two details of that sentence are still aspirational.** The cache carries a timestamp but no
-validator, so a refresh is a full request rather than one conditional `If-None-Match`, and the
-catalogue is not fetched at launch at all. An id that vanished upstream is simply absent from
-the next table; it is not kept and marked. The
+**The cache validates itself.** A refresh sends `If-None-Match` with the validator stored
+beside the last table, so an unchanged catalogue is a 304 and the per-model endpoint lookups
+are skipped entirely. The cache is read and conditionally refreshed at launch, on a
+background task, so AI Models is warm before anyone opens it. An id that vanished upstream is
+not dropped: the next table keeps the row with `available: false`, so a pin or a fallback
+chain holding it can say what happened to it, and the table marks it `gone`. The
 catalogue is also what makes the fallback chain in §1 mechanical — if the preferred model is
 down, the next one is a row in a table we already have.
 
@@ -162,12 +168,18 @@ best JSON emitter. **Settings → AI Models** shows the table (model, provider, 
 throughput, score for the selected task) with an **Auto** mode that takes the top row and a pin
 for anyone who disagrees with it.
 
-**As built, only two of those four terms exist.** `catalog.rs` weights availability 0.6 against
-speed 0.4 (`AVAILABILITY_SHARE`, `SPEED_SHARE`); there is no quality term and no penalty table.
-The evidence quality would need is not recorded either: a sample is `at`, `model`, `task`, `ok`
-and `ms` — no provider, first-token latency, token count, HTTP status, or whether the person
-kept, undid or reran the reply. The weights are file constants rather than per-task settings,
-so nothing in Settings adjusts them.
+**All four terms exist now.** A sample records the provider that answered, time to first
+token, prompt and completion tokens, the HTTP status, and — once the person has decided —
+whether the reply was kept, undone or rerun. Quality is the mean of those verdicts, with a
+keep worth one, a rerun worth 0.4 and an undo worth nothing, and undecided calls left out
+rather than counted as good. The weights are `TaskWeights` per task in `settings.json`,
+written through `set_task_weights`, and the penalty table subtracts for a failure streak,
+for replies people undid, and for an endpoint that has been answering 429, each capped so a
+model can always climb back. Tests prove a kept reply outranks an undone one, that changing
+the weights changes the order, and that the rejection penalty moves a repeatedly-rejected
+model down. What the table does not have is an editor on screen: the weights and penalties
+are commands and settings rather than controls, which is the one part of this paragraph
+still thinner than the plan imagined.
 
 ## 4. Typer: typing that looks like a person
 

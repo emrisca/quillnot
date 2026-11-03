@@ -216,6 +216,62 @@ fn set_default_model(app: AppHandle, model: String) -> Result<(), String> {
     store::write_settings(&app, &settings)
 }
 
+/* -------------------------------------------------------------- ranking data */
+
+/// Records what the person did with the newest reply from a model: kept it, undid it,
+/// or ran it again. This is the only quality signal the ranking has, and the one no
+/// provider can report, so it is recorded per model and per task.
+#[tauri::command]
+fn record_outcome(app: AppHandle, model: String, task: String, outcome: String) -> bool {
+    samples::set_outcome(&app, &model, &task, &outcome)
+}
+
+#[tauri::command]
+fn task_weights(app: AppHandle, task: String) -> store::TaskWeights {
+    store::read_settings(&app).weights_for(&catalog::normalise_task(&task))
+}
+
+/// Saves the weights for one task. They are clamped here rather than in the view: a
+/// settings file is not a place to fail a run, but it is a place to refuse nonsense.
+#[tauri::command]
+fn set_task_weights(
+    app: AppHandle,
+    task: String,
+    weights: store::TaskWeights,
+) -> Result<store::TaskWeights, String> {
+    let task = catalog::normalise_task(&task);
+    let clean = weights.sane();
+    let mut settings = store::read_settings(&app);
+    settings.weights.insert(task, clean);
+    store::write_settings(&app, &settings)?;
+    Ok(clean)
+}
+
+#[tauri::command]
+fn penalties(app: AppHandle) -> store::Penalties {
+    store::read_settings(&app).penalties()
+}
+
+#[tauri::command]
+fn set_penalties(app: AppHandle, penalties: store::Penalties) -> Result<store::Penalties, String> {
+    let clean = store::Penalties {
+        failure: penalties.failure.clamp(0.0, 50.0),
+        rejection: penalties.rejection.clamp(0.0, 50.0),
+        rate_limit: penalties.rate_limit.clamp(0.0, 50.0),
+    };
+    let mut settings = store::read_settings(&app);
+    settings.penalties = Some(clean);
+    store::write_settings(&app, &settings)?;
+    Ok(clean)
+}
+
+/// Asks the catalogue to refresh now, conditionally. Used by the AI Models view so the
+/// table it shows is the one the launch refresh wrote.
+#[tauri::command]
+fn refresh_catalogue(app: AppHandle) {
+    catalog::refresh_on_launch(app);
+}
+
 /// The mode the workspace opens in; `None` means Standard.
 #[tauri::command]
 fn default_mode(app: AppHandle) -> Option<String> {
@@ -333,6 +389,10 @@ pub fn run() {
         .manage(typer::StopShortcut::default())
         .setup(|app| {
             typer::register_stop_shortcut(app.handle());
+            // One conditional request on a background task: the AI Models table is warm
+            // before anyone opens it, and a second launch costs a 304 rather than the
+            // whole catalogue.
+            catalog::refresh_on_launch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -362,6 +422,12 @@ pub fn run() {
             set_default_mode,
             default_model,
             set_default_model,
+            record_outcome,
+            task_weights,
+            set_task_weights,
+            penalties,
+            set_penalties,
+            refresh_catalogue,
             humanizer,
             set_humanizer,
             list_providers,

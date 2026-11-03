@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { useConnection } from "../lib/connection";
+import { isDesktop } from "../lib/openrouter";
+import { onQuota, type Quota } from "../lib/quota";
 import { toggleTheme, useTheme } from "../lib/theme";
 import { TITLES, type ToolId } from "../lib/tools";
 
@@ -7,6 +10,19 @@ export function TopBar({ tool }: { tool: ToolId }) {
   const connection = useConnection();
   const theme = useTheme();
   const nextTheme = theme === "dark" ? "light" : "dark";
+
+  // What the last call's provider said was left in the window. Absent until a call has
+  // been made, because a number nobody reported is not a number worth showing.
+  const [quota, setQuota] = useState<Quota | null>(null);
+
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let stop: (() => void) | undefined;
+    void onQuota(setQuota).then((off) => {
+      stop = off;
+    });
+    return () => stop?.();
+  }, []);
 
   return (
     <header className="topbar">
@@ -35,6 +51,19 @@ export function TopBar({ tool }: { tool: ToolId }) {
         >
           Free models
         </span>
+        {quota && (quota.remaining !== null || quota.limit !== null) ? (
+          <span
+            className="pill"
+            title={
+              `${quota.provider} reported ${quota.remaining ?? "?"} requests left` +
+              (quota.limit ? ` of ${quota.limit}` : "") +
+              " in its current window. Free tiers reset this often."
+            }
+          >
+            {quota.remaining ?? "?"}
+            {quota.limit ? `/${quota.limit}` : ""} left
+          </span>
+        ) : null}
         {connection.connected ? (
           <span className="pill pill--live" title={`Signed in with ${connection.hint ?? "an OpenRouter key"}`}>
             Live

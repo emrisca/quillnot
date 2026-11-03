@@ -50,6 +50,78 @@ pub struct Settings {
     /// means the platform default, so clearing it is always a way back to something that
     /// works.
     pub typer_stop_shortcut: Option<String>,
+    /// Ranking weights per task, which is where the score's shape lives now that it is
+    /// not a constant. Absent means [`TaskWeights::default`].
+    pub weights: BTreeMap<String, TaskWeights>,
+    /// What the ranking subtracts for failure, rejection and rate limiting.
+    pub penalties: Option<Penalties>,
+}
+
+/// How much each term of the score counts, per task. The plan's w1, w2 and w3: nobody
+/// knows in advance that one model is the best paraphraser and another the best JSON
+/// emitter, so these are settings rather than constants.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskWeights {
+    pub availability: f64,
+    pub speed: f64,
+    pub quality: f64,
+}
+
+impl Default for TaskWeights {
+    fn default() -> Self {
+        Self {
+            availability: 0.5,
+            speed: 0.3,
+            // A real term, not a tie-breaker: a model that people keep beats a faster
+            // one they undo.
+            quality: 0.2,
+        }
+    }
+}
+
+impl TaskWeights {
+    /// Negative weights would turn the ranking into a different, wrong thing, and all
+    /// zeroes would make every score identical. Both are clamped rather than refused,
+    /// because a settings file is not a place to fail a run.
+    pub fn sane(self) -> Self {
+        let clamp = |value: f64| {
+            if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }
+        };
+        let mut clean = Self {
+            availability: clamp(self.availability),
+            speed: clamp(self.speed),
+            quality: clamp(self.quality),
+        };
+        if clean.availability + clean.speed + clean.quality <= f64::EPSILON {
+            clean = Self::default();
+        }
+        clean
+    }
+}
+
+/// The penalty table: what the ranking subtracts from a score out of 100 for things a
+/// person would not forgive. Failure and rejection are capped in [`crate::catalog`] so
+/// one bad afternoon cannot bury a model forever.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Penalties {
+    /// Points off per failure in the current streak.
+    pub failure: f64,
+    /// Points off per reply the person undid.
+    pub rejection: f64,
+    /// Points off when the endpoint has answered 429 recently.
+    pub rate_limit: f64,
+}
+
+impl Default for Penalties {
+    fn default() -> Self {
+        Self {
+            failure: 6.0,
+            rejection: 8.0,
+            rate_limit: 10.0,
+        }
+    }
 }
 
 impl Settings {
@@ -57,6 +129,19 @@ impl Settings {
     /// catalogue exists, so picking from it is the default rather than an opt-in.
     pub fn auto_enabled(&self) -> bool {
         self.auto_model.unwrap_or(true)
+    }
+
+    /// The weights for one task, with a sane fallback for a task nobody has tuned.
+    pub fn weights_for(&self, task: &str) -> TaskWeights {
+        self.weights
+            .get(task)
+            .copied()
+            .unwrap_or_default()
+            .sane()
+    }
+
+    pub fn penalties(&self) -> Penalties {
+        self.penalties.unwrap_or_default()
     }
 }
 
@@ -224,6 +309,59 @@ mod tests {
     #[test]
     fn a_short_string_does_not_panic() {
         assert_eq!(hint("abc"), "…");
+    }
+
+    #[test]
+    fn weights_are_per_task_and_fall_back_to_the_defaults() {
+        let mut weights = std::collections::BTreeMap::new();
+        weights.insert(
+            "grammar".to_string(),
+            super::TaskWeights {
+                availability: 0.1,
+                speed: 0.2,
+                quality: 0.7,
+            },
+        );
+        let settings = super::Settings {
+            weights,
+            ..super::Settings::default()
+        };
+
+        let grammar = settings.weights_for("grammar");
+        assert_eq!(grammar.quality, 0.7);
+        assert_eq!(
+            settings.weights_for("paraphrase"),
+            super::TaskWeights::default(),
+            "an untuned task keeps its own default"
+        );
+    }
+
+    #[test]
+    fn nonsense_weights_are_clamped_rather_than_breaking_the_ranking() {
+        let all_zero = super::TaskWeights {
+            availability: 0.0,
+            speed: 0.0,
+            quality: 0.0,
+        };
+        assert_eq!(all_zero.sane(), super::TaskWeights::default());
+
+        let wild = super::TaskWeights {
+            availability: -2.0,
+            speed: 9.0,
+            quality: f64::NAN,
+        };
+        let clean = wild.sane();
+        assert_eq!(clean.availability, 0.0);
+        assert_eq!(clean.speed, 1.0);
+        assert_eq!(clean.quality, 0.0);
+    }
+
+    #[test]
+    fn a_settings_file_without_weights_or_penalties_gets_the_defaults() {
+        let settings: super::Settings = serde_json::from_str("{\"defaultMode\":\"simple\"}")
+            .expect("an older settings file parses");
+        assert_eq!(settings.weights_for("paraphrase"), super::TaskWeights::default());
+        assert_eq!(settings.penalties(), super::Penalties::default());
     }
 
     /// Touches the real OS key store, so it is `#[ignore]`d out of the normal run.

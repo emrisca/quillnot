@@ -41,6 +41,17 @@ export type RankedModel = {
   successRate: number | null;
   /** Median of our successful calls, in milliseconds. */
   ourLatencyMs: number | null;
+  /** Median time to the first token, on the calls that reported one. */
+  ourTtftMs: number | null;
+  /** The quality term out of one: what people did with the replies. */
+  quality: number | null;
+  kept: number;
+  undone: number;
+  rerun: number;
+  /** What the penalty table subtracted from the score. */
+  penalty: number;
+  /** False when the model has disappeared from the catalogue upstream. */
+  available: boolean;
   /** Failures in a row, newest first. Three is the demotion. */
   streak: number;
   pinned: boolean;

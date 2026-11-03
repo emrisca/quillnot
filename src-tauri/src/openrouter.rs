@@ -450,6 +450,50 @@ pub async fn paraphrase_with(
     Ok(result)
 }
 
+/// The event the header badge listens on for the provider's remaining requests.
+pub const QUOTA_EVENT: &str = "quota:update";
+
+/// What a provider says is left of this window's allowance. Both numbers are optional
+/// because providers disagree about which headers they send, and a provider that sends
+/// neither should leave the last reading alone rather than blank it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Quota {
+    pub provider: String,
+    pub remaining: Option<u64>,
+    pub limit: Option<u64>,
+}
+
+fn note_quota(app: Option<&AppHandle>, provider: &str, headers: &reqwest::header::HeaderMap) {
+    let number = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    };
+    let remaining = number("x-ratelimit-remaining-requests").or_else(|| number("x-ratelimit-remaining"));
+    let limit = number("x-ratelimit-limit-requests").or_else(|| number("x-ratelimit-limit"));
+    if remaining.is_none() && limit.is_none() {
+        return;
+    }
+    if let Some(handle) = app {
+        let _ = handle.emit(
+            QUOTA_EVENT,
+            Quota {
+                provider: provider.to_string(),
+                remaining,
+                limit,
+            },
+        );
+    }
+}
+
+/// The body of one finished call, with everything the sample log wants to keep.
+struct Call {
+    body: String,
+    meta: samples::CallMeta,
+}
+
 /// One block, with the fallback the plan promised: the preferred model first, the
 /// gateway router after it. An empty rewrite counts as a failure — a model that
 /// answers with nothing has not answered.
@@ -468,7 +512,22 @@ pub async fn stream_block(
         }
 
         let model = attempt.model.clone();
+        let started = std::time::Instant::now();
+        // When the first token arrived. Measured in the sink itself, so it is the moment
+        // the text started to exist rather than when the call returned.
+        // Atomic rather than a Cell: the sink is held across an await and the future has
+        // to be Send, which a Cell is not.
+        const UNSET: u64 = u64::MAX;
+        let first_token = std::sync::atomic::AtomicU64::new(UNSET);
         let mut sink = |piece: &str| {
+            if first_token.load(std::sync::atomic::Ordering::Relaxed) == UNSET {
+                let _ = first_token.compare_exchange(
+                    UNSET,
+                    started.elapsed().as_millis() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             if let Some(handle) = app {
                 let _ = handle.emit(
                     DELTA_EVENT,
@@ -481,26 +540,32 @@ pub async fn stream_block(
             }
         };
 
-        let started = std::time::Instant::now();
         let outcome =
             tokio::time::timeout(BLOCK_TIMEOUT, stream_once(attempt, system, user, &mut sink)).await;
         let elapsed = started.elapsed();
+        let measured = first_token.load(std::sync::atomic::Ordering::Relaxed);
+        let meta = samples::CallMeta {
+            provider: Some(host_of(&attempt.base_url)),
+            ttft_ms: (measured != UNSET).then_some(measured),
+            status: Some(200),
+            ..samples::CallMeta::default()
+        };
 
         match outcome {
             Ok(Ok(body)) if !body.trim().is_empty() => {
-                record_sample(app, task, &model, true, elapsed);
+                record_sample(app, task, &model, true, elapsed, meta);
                 return Ok((model, body.trim().to_string()));
             }
             Ok(Ok(_)) => {
-                record_sample(app, task, &model, false, elapsed);
+                record_sample(app, task, &model, false, elapsed, meta);
                 last_error = format!("{model} returned an empty rewrite");
             }
             Ok(Err(err)) => {
-                record_sample(app, task, &model, false, elapsed);
+                record_sample(app, task, &model, false, elapsed, meta);
                 last_error = err;
             }
             Err(_) => {
-                record_sample(app, task, &model, false, elapsed);
+                record_sample(app, task, &model, false, elapsed, meta);
                 last_error = format!("{model} took longer than three minutes");
             }
         }
@@ -522,9 +587,16 @@ async fn backoff(attempt: usize) {
 /// too, and three in a row is what demotes a model.
 ///
 /// No window means `--self-test`, which must not fill the log with test calls.
-fn record_sample(app: Option<&AppHandle>, task: &str, model: &str, ok: bool, elapsed: Duration) {
+fn record_sample(
+    app: Option<&AppHandle>,
+    task: &str,
+    model: &str,
+    ok: bool,
+    elapsed: Duration,
+    meta: samples::CallMeta,
+) {
     if let Some(handle) = app {
-        samples::record(handle, model, task, ok, elapsed.as_millis() as u64);
+        samples::record(handle, model, task, ok, elapsed.as_millis() as u64, meta);
     }
 }
 
@@ -694,24 +766,39 @@ pub async fn complete(
         }
 
         let started = std::time::Instant::now();
-        let outcome = tokio::time::timeout(BLOCK_TIMEOUT, complete_once(attempt, system, user)).await;
+        let outcome =
+            tokio::time::timeout(BLOCK_TIMEOUT, complete_once(app, attempt, system, user)).await;
         let elapsed = started.elapsed();
 
         match outcome {
-            Ok(Ok(body)) if !body.trim().is_empty() => {
-                record_sample(app, task, &attempt.model, true, elapsed);
-                return Ok((attempt.model.clone(), body));
+            Ok(Ok(call)) if !call.body.trim().is_empty() => {
+                record_sample(app, task, &attempt.model, true, elapsed, call.meta);
+                return Ok((attempt.model.clone(), call.body));
             }
-            Ok(Ok(_)) => {
-                record_sample(app, task, &attempt.model, false, elapsed);
+            Ok(Ok(call)) => {
+                record_sample(app, task, &attempt.model, false, elapsed, call.meta);
                 last_error = format!("{} returned an empty answer", attempt.model);
             }
             Ok(Err(err)) => {
-                record_sample(app, task, &attempt.model, false, elapsed);
+                record_sample(
+                    app,
+                    task,
+                    &attempt.model,
+                    false,
+                    elapsed,
+                    samples::CallMeta::default(),
+                );
                 last_error = err;
             }
             Err(_) => {
-                record_sample(app, task, &attempt.model, false, elapsed);
+                record_sample(
+                    app,
+                    task,
+                    &attempt.model,
+                    false,
+                    elapsed,
+                    samples::CallMeta::default(),
+                );
                 last_error = format!("{} took longer than three minutes", attempt.model);
             }
         }
@@ -720,10 +807,13 @@ pub async fn complete(
 }
 
 async fn complete_once(
+    app: Option<&AppHandle>,
     attempt: &providers::Attempt,
     system: &str,
     user: &str,
-) -> Result<String, String> {
+) -> Result<Call, String> {
+    let call_started = std::time::Instant::now();
+
     #[derive(Serialize)]
     struct Message<'a> {
         role: &'a str,
@@ -742,6 +832,16 @@ async fn complete_once(
     struct Reply {
         #[serde(default)]
         choices: Vec<ReplyChoice>,
+        #[serde(default)]
+        usage: Option<Usage>,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct Usage {
+        #[serde(default)]
+        prompt_tokens: Option<u64>,
+        #[serde(default)]
+        completion_tokens: Option<u64>,
     }
 
     #[derive(Deserialize)]
@@ -805,16 +905,33 @@ async fn complete_once(
         return Err(status_error(&host, &attempt.model, status, retry_after, &body));
     }
 
+    // Time to the headers, which for a non-streaming call is when the reply started
+    // arriving. Recorded before the body is read, because reading it moves the response.
+    let ttft_ms = Some(call_started.elapsed().as_millis() as u64);
+    let quota_headers = response.headers().clone();
+    note_quota(app, &host, &quota_headers);
+
     let reply: Reply = response
         .json()
         .await
         .map_err(|e| format!("could not read {host}'s reply: {e}"))?;
-    reply
-        .choices
+    let Reply { choices, usage } = reply;
+    let body = choices
         .into_iter()
         .next()
         .and_then(|choice| choice.message.content)
-        .ok_or_else(|| format!("{host} answered without any content"))
+        .ok_or_else(|| format!("{host} answered without any content"))?;
+
+    Ok(Call {
+        body,
+        meta: samples::CallMeta {
+            provider: Some(host),
+            ttft_ms,
+            tokens_in: usage.as_ref().and_then(|usage| usage.prompt_tokens),
+            tokens_out: usage.as_ref().and_then(|usage| usage.completion_tokens),
+            status: Some(status.as_u16()),
+        },
+    })
 }
 
 fn status_error(
