@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { isDesktop, modelCatalogue, type RankedModel } from "../lib/openrouter";
+import {
+  isDesktop,
+  modelCatalogue,
+  setAutoModel,
+  setPinnedModel,
+  type Catalogue,
+  type ModelTask,
+  type RankedModel,
+} from "../lib/openrouter";
 
 const percent = (value: number | null): string =>
   value === null ? "—" : `${(value * 100).toFixed(value >= 0.995 ? 0 : 1)}%`;
@@ -13,10 +21,28 @@ const rate = (value: number | null): string =>
 
 const scoreText = (value: number | null): string => (value === null ? "—" : value.toFixed(0));
 
+const TASKS: { id: ModelTask; label: string }[] = [
+  { id: "paraphrase", label: "Paraphrase" },
+  { id: "grammar", label: "Grammar" },
+];
+
+type SortKey = "rank" | "name" | "uptime" | "latency" | "ours" | "runs" | "score";
+
+const SORTS: { key: SortKey; label: string; className?: string }[] = [
+  { key: "rank", label: "#", className: "mrank" },
+  { key: "name", label: "Model" },
+  { key: "uptime", label: "Uptime", className: "mnum" },
+  { key: "latency", label: "Reported", className: "mnum" },
+  { key: "ours", label: "Ours", className: "mnum" },
+  { key: "runs", label: "Calls", className: "mnum" },
+  { key: "score", label: "Score", className: "mnum" },
+];
+
 /**
  * What the numbers actually say about the endpoint right now. Most free models
  * report a day-long uptime and nothing else, so "up" here means "reported up in the
- * last window OpenRouter filled in" — not "we measured this lately".
+ * last window OpenRouter filled in" — not "we measured this lately". The `Ours`
+ * column is the measured half; a dash there means this app has never called it.
  */
 const availability = (row: RankedModel): { label: string; tone: "up" | "down" | "unknown" } => {
   if (row.uptime === null) return { label: "No stats reported in any window", tone: "unknown" };
@@ -24,29 +50,54 @@ const availability = (row: RankedModel): { label: string; tone: "up" | "down" | 
   return { label: "Reported up", tone: "up" };
 };
 
+/** A missing number sorts last whichever way the column is sorted. */
+function compare(a: RankedModel, b: RankedModel, key: SortKey): number {
+  if (key === "name") return (a.name ?? a.id).localeCompare(b.name ?? b.id);
+  if (key === "rank") return 0;
+
+  const pick = (row: RankedModel): number | null => {
+    if (key === "uptime") return row.uptime;
+    if (key === "latency") return row.latencyMs;
+    if (key === "ours") return row.ourLatencyMs;
+    if (key === "runs") return row.runs;
+    return row.score;
+  };
+
+  const left = pick(a);
+  const right = pick(b);
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
 /**
- * The AI Models view: every zero-priced model, the best availability and speed any
- * provider reported for it, and the score that falls out of those numbers.
+ * The AI Models view: every zero-priced model, scored for the task you are about to
+ * run, with what Auto picks and a pin for when you would rather decide.
  *
- * The dashes matter. A free endpoint with no traffic in the window reports null, and
- * a table that rendered that as "0%" would rank a brand-new model last for the
- * crime of being new. A dash means no evidence; the evidence dots say how much the
- * score actually rests on.
+ * Two numbers sit side by side on purpose. The platform's are what OpenRouter reports
+ * and are usually a day-long uptime; ours are the calls this app made itself. The
+ * dashes matter: no evidence is not zero, and a table that rendered a missing sample
+ * as "0 ms" would rank a model it has never tried above one it has.
  */
 export function ModelsView() {
-  const [rows, setRows] = useState<RankedModel[] | null>(null);
+  const [task, setTask] = useState<ModelTask>("paraphrase");
+  const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "score", dir: -1 });
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (which: ModelTask) => {
     if (!isDesktop()) {
-      setError("Run the app (npm run tauri dev) to read the live catalogue; this browser preview has no Rust side to ask.");
+      setError(
+        "Run the app (npm run tauri dev) to read the live catalogue; this browser preview has no Rust side to ask.",
+      );
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      setRows(await modelCatalogue());
+      setCatalogue(await modelCatalogue(which));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -55,30 +106,108 @@ export function ModelsView() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(task);
+  }, [load, task]);
 
-  const scored = rows?.filter((row) => row.score !== null).length ?? 0;
+  async function choose(action: () => Promise<void>) {
+    try {
+      await action();
+      await load(task);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function toggleSort(key: SortKey) {
+    setSort((current) =>
+      current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: -1 },
+    );
+  }
+
+  const rows = useMemo(() => {
+    if (!catalogue) return [];
+    if (sort.key === "rank") return catalogue.rows;
+    return [...catalogue.rows].sort((a, b) => {
+      const order = compare(a, b, sort.key);
+      // Ties fall back to the measured ranking, so a sort never shuffles for no reason.
+      return order === 0 ? 0 : order * sort.dir;
+    });
+  }, [catalogue, sort]);
+
+  const scored = catalogue?.rows.filter((row) => row.score !== null).length ?? 0;
+  const measured = catalogue?.rows.filter((row) => row.runs > 0).length ?? 0;
 
   return (
     <div className="mpage">
       <div className="mpage__head">
         <div className="mpage__titles">
           <h2 className="mpage__title">
-            {rows ? `${rows.length} free models` : "Free models"}
-            {rows ? <span className="mpage__sub"> · {scored} with live numbers</span> : null}
+            {catalogue ? `${catalogue.rows.length} free models` : "Free models"}
+            {catalogue ? (
+              <span className="mpage__sub">
+                {" "}
+                · {scored} with numbers · {measured} we have called
+              </span>
+            ) : null}
           </h2>
           <p className="mpage__note">
-            From OpenRouter's endpoint stats: uptime from the most recent window that reports
-            anything, latency and throughput over 30 minutes. A dash means no traffic in that
-            window, not zero — and a score resting on a single signal sits below its face value,
-            so an unmeasured model cannot outrank a measured one. The dots say how much stands
-            behind each number. Our own per-task samples and model pinning arrive in M7.
+            Scored for the task you pick, from two sources: what OpenRouter reports — uptime
+            from the most recent window that says anything, latency and throughput over 30
+            minutes — and every call this app has made, timed per model and per task. Our
+            numbers outweigh the platform's as they accumulate, and three failures in a row
+            demote a model until it answers again. A dash is no evidence, never zero. Until
+            this app has called a model for a task, Auto has nothing to go on and leaves the
+            run to the gateway router rather than picking whichever id sorts first.
           </p>
         </div>
-        <button type="button" className="btn btn--sm btn--quiet" onClick={() => void load()} disabled={busy}>
+        <button
+          type="button"
+          className="btn btn--sm btn--quiet"
+          onClick={() => void load(task)}
+          disabled={busy}
+        >
           {busy ? "Reading…" : "Refresh"}
         </button>
+      </div>
+
+      <div className="mtoolbar">
+        <div className="mtasks">
+          {TASKS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className={`chip-btn${task === entry.id ? " is-on" : ""}`}
+              aria-pressed={task === entry.id}
+              onClick={() => setTask(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mauto">
+          <button
+            type="button"
+            className={`chip-btn${catalogue?.auto ? " is-on" : ""}`}
+            aria-pressed={Boolean(catalogue?.auto)}
+            disabled={!isDesktop() || busy}
+            title="Let the ranking choose the model for each run"
+            onClick={() => void choose(() => setAutoModel(!catalogue?.auto))}
+          >
+            Auto
+          </button>
+          <span className="mauto__note">
+            {catalogue === null
+              ? "Reading the ranking…"
+              : catalogue.pinned
+                ? `pinned to ${catalogue.pinned} — Auto is set aside`
+                : catalogue.auto
+                  ? catalogue.autoChoice
+                    ? `would send this task to ${catalogue.autoChoice}`
+                    : "nothing measured yet — your provider's configured model answers"
+                  : "off — your provider's configured model answers"}
+          </span>
+        </div>
       </div>
 
       {error ? (
@@ -89,20 +218,27 @@ export function ModelsView() {
       ) : null}
 
       <div className="mcard">
-        {busy && !rows ? (
+        {busy && !catalogue ? (
           <p className="empty" style={{ padding: "18px" }}>
             Asking OpenRouter about every free endpoint…
           </p>
-        ) : rows && rows.length > 0 ? (
+        ) : rows.length > 0 ? (
           <table className="mtable">
             <thead>
               <tr>
-                <th className="mrank">#</th>
-                <th>Model</th>
-                <th className="mnum">Uptime</th>
-                <th className="mnum">Latency</th>
-                <th className="mnum">Throughput</th>
-                <th className="mnum">Score</th>
+                {SORTS.map((column) => (
+                  <th
+                    key={column.key}
+                    className={`${column.className ?? ""} msort`}
+                    onClick={() => toggleSort(column.key)}
+                    title={`Sort by ${column.label.replace("#", "rank")}`}
+                  >
+                    {column.label}
+                    <span className="msort__mark">
+                      {sort.key === column.key ? (sort.dir === 1 ? "▲" : "▼") : ""}
+                    </span>
+                  </th>
+                ))}
                 <th>Evidence</th>
               </tr>
             </thead>
@@ -117,19 +253,51 @@ export function ModelsView() {
                     />
                     <span className="mname">{row.name ?? row.id}</span>
                     <span className="mid"> {row.id}</span>
+                    {row.chosen ? <span className="chip chip--live">Auto</span> : null}
+                    {row.streak > 0 ? (
+                      <span
+                        className="mfail"
+                        title={`${row.streak} failure${row.streak === 1 ? "" : "s"} in a row`}
+                      >
+                        {row.streak} fail{row.streak === 1 ? "" : "s"}
+                      </span>
+                    ) : null}
                     <span className="mpills">
-                      <span className="mpill">{row.providers} provider{row.providers === 1 ? "" : "s"}</span>
+                      <span className="mpill">
+                        {row.providers} provider{row.providers === 1 ? "" : "s"}
+                      </span>
                       {row.contextLength ? (
                         <span className="mpill">{Math.round(row.contextLength / 1000)}k ctx</span>
                       ) : null}
                     </span>
+                    <button
+                      type="button"
+                      className={`mpin${row.pinned ? " is-pinned" : ""}`}
+                      disabled={!isDesktop() || busy}
+                      title={row.pinned ? "Clear the pin" : "Always send this task to this model"}
+                      onClick={() =>
+                        void choose(() => setPinnedModel(row.pinned ? null : row.id))
+                      }
+                    >
+                      {row.pinned ? "pinned" : "pin"}
+                    </button>
                   </td>
                   <td className={`mnum${row.uptime === null ? " mdash" : ""}`}>
                     {percent(row.uptime)}
                     {row.uptimeWindow ? <span className="mwindow">{row.uptimeWindow}</span> : null}
                   </td>
-                  <td className={`mnum${row.latencyMs === null ? " mdash" : ""}`}>{millis(row.latencyMs)}</td>
-                  <td className={`mnum${row.throughput === null ? " mdash" : ""}`}>{rate(row.throughput)}</td>
+                  <td className={`mnum${row.latencyMs === null ? " mdash" : ""}`}>
+                    {millis(row.latencyMs)}
+                  </td>
+                  <td className={`mnum${row.ourLatencyMs === null ? " mdash" : ""}`}>
+                    {millis(row.ourLatencyMs)}
+                    {row.runs > 0 ? (
+                      <span className="mwindow">
+                        {percent(row.successRate)}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className={`mnum${row.runs === 0 ? " mdash" : ""}`}>{row.runs || "—"}</td>
                   <td className="mnum">
                     <span className="mscore">
                       <span className="mscore__bar">
@@ -151,7 +319,7 @@ export function ModelsView() {
               ))}
             </tbody>
           </table>
-        ) : rows ? (
+        ) : catalogue ? (
           <p className="empty" style={{ padding: "18px" }}>
             No zero-priced text models came back. That is unusual — refresh in a moment.
           </p>

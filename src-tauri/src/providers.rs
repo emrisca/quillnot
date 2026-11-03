@@ -13,7 +13,7 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::store;
+use crate::{catalog, store};
 
 pub struct Provider {
     pub id: &'static str,
@@ -127,6 +127,20 @@ pub struct Route {
     pub attempts: Vec<Attempt>,
 }
 
+/// What the ranking contributes to a route: the model Auto measured as best, and the
+/// order to fall back through when it refuses.
+#[derive(Debug, Default, Clone)]
+pub struct Picks {
+    pub auto: Option<String>,
+    /// Best first, demoted models already removed.
+    pub ranked: Vec<String>,
+}
+
+/// A block tries at most this many models before giving up. The first, two measured
+/// alternates, and the gateway router: past that the run has cost more patience than
+/// a rewrite is worth.
+const MAX_ATTEMPTS: usize = 4;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderStatus {
@@ -201,11 +215,9 @@ fn build_route(
     provider: &Provider,
     settings: &store::Settings,
     model_override: Option<String>,
+    picks: &Picks,
 ) -> Result<Route, String> {
-    let model = model_override
-        .map(|model| model.trim().to_string())
-        .filter(|model| !model.is_empty())
-        .unwrap_or_else(|| configured_model(settings, provider));
+    let model = first_model(settings, provider, model_override, picks);
 
     let key = store::load_key_for(provider.id);
     if provider.needs_key && key.is_none() {
@@ -230,20 +242,34 @@ fn build_route(
         openrouter: provider.id == "openrouter",
     }];
 
-    if provider.id != "openrouter" {
-        if let Some(openrouter_key) = store::load_key_for("openrouter") {
+    if provider.id == "openrouter" {
+        // The measured order after the chosen model, then the gateway router as the
+        // last thing that can answer. A 429 fails in milliseconds, so trying two
+        // alternates costs little when it matters; a stalled stream is the expensive
+        // case, and the timeout is what caps that.
+        for id in picks.ranked.iter().filter(|id| **id != model) {
+            if attempts.len() >= MAX_ATTEMPTS - 1 {
+                break;
+            }
             attempts.push(Attempt {
-                base_url: get("openrouter").expect("registry entry").base_url.to_string(),
-                key: Some(openrouter_key),
+                base_url: provider.base_url.to_string(),
+                key: key.clone(),
+                model: id.clone(),
+                openrouter: true,
+            });
+        }
+        if model != "openrouter/free" && attempts.len() < MAX_ATTEMPTS {
+            attempts.push(Attempt {
+                base_url: provider.base_url.to_string(),
+                key,
                 model: "openrouter/free".to_string(),
                 openrouter: true,
             });
         }
-    } else if model != "openrouter/free" {
-        // The router itself is the cheapest second opinion on OpenRouter.
+    } else if let Some(openrouter_key) = store::load_key_for("openrouter") {
         attempts.push(Attempt {
             base_url: get("openrouter").expect("registry entry").base_url.to_string(),
-            key,
+            key: Some(openrouter_key),
             model: "openrouter/free".to_string(),
             openrouter: true,
         });
@@ -252,17 +278,76 @@ fn build_route(
     Ok(Route { model, attempts })
 }
 
-pub fn resolve(app: &AppHandle, model_override: Option<String>) -> Result<Route, String> {
+/// What answers first: a model named for this run, then a pin, then Auto's measured
+/// choice, then the older default-model setting, then the provider's own model.
+///
+/// The pin and Auto are OpenRouter's, because that is the provider with a catalogue.
+/// A pinned id must not leak into a Groq run, where it would simply 404.
+fn first_model(
+    settings: &store::Settings,
+    provider: &Provider,
+    model_override: Option<String>,
+    picks: &Picks,
+) -> String {
+    let ours = provider.id == "openrouter";
+    let chosen = model_override
+        .or_else(|| if ours { settings.pinned_model.clone() } else { None })
+        .or_else(|| if ours { picks.auto.clone() } else { None })
+        .or_else(|| settings.default_model.clone())
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+
+    chosen.unwrap_or_else(|| configured_model(settings, provider))
+}
+
+/// Reads the last ranking and turns it into routing: which model Auto picked, and the
+/// order behind it. No cache means no opinion, and the provider's own model stands.
+fn picks_for(
+    app: &AppHandle,
+    settings: &store::Settings,
+    provider: &Provider,
+    task: &str,
+) -> Picks {
+    if provider.id != "openrouter" {
+        return Picks::default();
+    }
+    let Some(catalogue) = catalog::ranked_from_cache(app, task) else {
+        return Picks::default();
+    };
+
+    // A pin means "not Auto": the ranking still supplies the fallbacks, never the
+    // first attempt.
+    let auto = if settings.auto_enabled() && settings.pinned_model.is_none() {
+        catalogue.auto_choice
+    } else {
+        None
+    };
+
+    let ranked = catalogue
+        .rows
+        .into_iter()
+        .filter(|row| !row.demoted() && row.score.is_some())
+        .map(|row| row.id)
+        .collect();
+
+    Picks { auto, ranked }
+}
+
+/// `task` is `paraphrase` or `grammar`: the two are measured separately, and a model
+/// that writes prose well can still refuse to emit the JSON a check needs.
+pub fn resolve(
+    app: &AppHandle,
+    model_override: Option<String>,
+    task: &str,
+) -> Result<Route, String> {
     let settings = store::read_settings(app);
     let id = settings
         .active_provider
         .clone()
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
     let provider = get(&id).ok_or_else(|| format!("Unknown provider “{id}”."))?;
-    // A model named per request wins, then the older default-model setting, then the
-    // provider's own choice.
-    let model = model_override.or_else(|| settings.default_model.clone());
-    build_route(provider, &settings, model)
+    let picks = picks_for(app, &settings, provider, task);
+    build_route(provider, &settings, model_override, &picks)
 }
 
 /// The same resolution without a window, for `--self-test`: OpenRouter, whatever key
@@ -302,6 +387,8 @@ mod tests {
             provider_models,
             custom_base_url: None,
             default_mode: None,
+            auto_model: None,
+            pinned_model: None,
         }
     }
 
@@ -316,7 +403,8 @@ mod tests {
     #[test]
     fn an_override_beats_the_default_model() {
         let settings = settings(&[("groq", "llama-3.1-8b-instant")], Some("groq"));
-        let route = build_route(get("groq").unwrap(), &settings, None).unwrap_or_else(|err| {
+        let route = build_route(get("groq").unwrap(), &settings, None, &Picks::default())
+            .unwrap_or_else(|err| {
             // No key stored on this machine: the model choice is what is under test.
             assert!(err.contains("Connect Groq"), "unexpected error: {err}");
             Route {
@@ -354,9 +442,66 @@ mod tests {
     fn a_provider_that_needs_a_key_without_one_names_itself() {
         let settings = settings(&[], Some("mistral"));
         // Only meaningful when no Mistral key is stored; keeps the message honest.
-        if let Err(err) = build_route(get("mistral").unwrap(), &settings, None) {
+        if let Err(err) = build_route(get("mistral").unwrap(), &settings, None, &Picks::default()) {
             assert!(err.contains("Mistral"), "unexpected error: {err}");
         }
+    }
+
+    fn picks(auto: Option<&str>, ranked: &[&str]) -> Picks {
+        Picks {
+            auto: auto.map(str::to_string),
+            ranked: ranked.iter().map(|id| id.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_pin_beats_auto_and_the_provider_default() {
+        let mut settings = settings(&[], Some("openrouter"));
+        settings.pinned_model = Some("pinned/model".into());
+        let model = first_model(
+            &settings,
+            get("openrouter").unwrap(),
+            None,
+            &picks(Some("measured/model"), &["measured/model"]),
+        );
+        assert_eq!(model, "pinned/model");
+    }
+
+    #[test]
+    fn auto_supplies_the_model_when_nothing_is_pinned() {
+        let settings = settings(&[], Some("openrouter"));
+        let model = first_model(
+            &settings,
+            get("openrouter").unwrap(),
+            None,
+            &picks(Some("measured/model"), &["measured/model"]),
+        );
+        assert_eq!(model, "measured/model");
+    }
+
+    #[test]
+    fn an_openrouter_choice_does_not_leak_into_another_provider() {
+        let settings = settings(&[], Some("groq"));
+        let model = first_model(
+            &settings,
+            get("groq").unwrap(),
+            None,
+            &picks(Some("google/gemma-4-31b-it:free"), &["google/gemma-4-31b-it:free"]),
+        );
+        assert_eq!(model, "llama-3.3-70b-versatile");
+    }
+
+    #[test]
+    fn a_run_override_still_beats_a_pin() {
+        let mut settings = settings(&[], Some("openrouter"));
+        settings.pinned_model = Some("pinned/model".into());
+        let model = first_model(
+            &settings,
+            get("openrouter").unwrap(),
+            Some("typed/model".into()),
+            &Picks::default(),
+        );
+        assert_eq!(model, "typed/model");
     }
 
     #[test]

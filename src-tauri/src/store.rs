@@ -21,6 +21,7 @@ const ACCOUNT: &str = "api-key";
 const PROVIDER_SERVICE: &str = "dev.emrys.quillnot.provider";
 const SETTINGS_FILE: &str = "settings.json";
 const MODELS_CACHE: &str = "catalog-models.json";
+const RANKING_CACHE: &str = "catalog-ranking.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -35,6 +36,18 @@ pub struct Settings {
     pub custom_base_url: Option<String>,
     /// The rewrite mode the workspace opens in. Absent means Standard.
     pub default_mode: Option<String>,
+    /// True unless the person turned Auto off. Absent means on.
+    pub auto_model: Option<bool>,
+    /// A model pinned from the AI Models table. A pin beats Auto.
+    pub pinned_model: Option<String>,
+}
+
+impl Settings {
+    /// Auto is on unless it was explicitly turned off: the ranking is the reason the
+    /// catalogue exists, so picking from it is the default rather than an opt-in.
+    pub fn auto_enabled(&self) -> bool {
+        self.auto_model.unwrap_or(true)
+    }
 }
 
 fn legacy_entry() -> Result<keyring::Entry, String> {
@@ -177,6 +190,12 @@ pub fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String
 /// Where the last good model list is kept so the picker works without a network.
 pub fn models_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join(MODELS_CACHE))
+}
+
+/// Where the last ranked table is kept: Auto answers from here mid-run instead of
+/// waiting on seventeen HTTP requests.
+pub fn ranking_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join(RANKING_CACHE))
 }
 
 #[cfg(test)]

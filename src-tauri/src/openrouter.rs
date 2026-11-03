@@ -27,6 +27,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::prompt;
 use crate::providers;
+use crate::samples;
 use crate::store;
 use crate::DELTA_EVENT;
 
@@ -351,7 +352,7 @@ pub async fn paraphrase_with(
     // its model. The failover chain is built in `providers`, so a free tier that is
     // rate limited hands the block to the next one instead of ending the run.
     let route = match app {
-        Some(handle) => providers::resolve(handle, request.model.clone())?,
+        Some(handle) => providers::resolve(handle, request.model.clone(), samples::PARAPHRASE)?,
         None => providers::resolve_headless(request.model.clone())?,
     };
 
@@ -383,7 +384,8 @@ pub async fn paraphrase_with(
         }
 
         let (system, user) = prompt::paraphrase_prompt(block, &mode, strength);
-        let (model, body) = stream_block(app, index, &route.attempts, &system, &user).await?;
+        let (model, body) =
+            stream_block(app, samples::PARAPHRASE, index, &route.attempts, &system, &user).await?;
         used = model;
         rewritten.push(body);
     }
@@ -415,6 +417,7 @@ pub async fn paraphrase_with(
 /// answers with nothing has not answered.
 pub async fn stream_block(
     app: Option<&AppHandle>,
+    task: &str,
     index: usize,
     attempts: &[providers::Attempt],
     system: &str,
@@ -440,16 +443,41 @@ pub async fn stream_block(
             }
         };
 
-        match tokio::time::timeout(BLOCK_TIMEOUT, stream_once(attempt, system, user, &mut sink))
-            .await
-        {
-            Ok(Ok(body)) if !body.trim().is_empty() => return Ok((model, body.trim().to_string())),
-            Ok(Ok(_)) => last_error = format!("{model} returned an empty rewrite"),
-            Ok(Err(err)) => last_error = err,
-            Err(_) => last_error = format!("{model} took longer than three minutes"),
+        let started = std::time::Instant::now();
+        let outcome =
+            tokio::time::timeout(BLOCK_TIMEOUT, stream_once(attempt, system, user, &mut sink)).await;
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Ok(Ok(body)) if !body.trim().is_empty() => {
+                record_sample(app, task, &model, true, elapsed);
+                return Ok((model, body.trim().to_string()));
+            }
+            Ok(Ok(_)) => {
+                record_sample(app, task, &model, false, elapsed);
+                last_error = format!("{model} returned an empty rewrite");
+            }
+            Ok(Err(err)) => {
+                record_sample(app, task, &model, false, elapsed);
+                last_error = err;
+            }
+            Err(_) => {
+                record_sample(app, task, &model, false, elapsed);
+                last_error = format!("{model} took longer than three minutes");
+            }
         }
     }
     Err(last_error)
+}
+
+/// One line in the sample log, whether the call worked or not: a failure is evidence
+/// too, and three in a row is what demotes a model.
+///
+/// No window means `--self-test`, which must not fill the log with test calls.
+fn record_sample(app: Option<&AppHandle>, task: &str, model: &str, ok: bool, elapsed: Duration) {
+    if let Some(handle) = app {
+        samples::record(handle, model, task, ok, elapsed.as_millis() as u64);
+    }
 }
 
 /// `api.groq.com` out of `https://api.groq.com/openai/v1`, for error messages that
@@ -605,6 +633,8 @@ async fn stream_once(
 /// there is nothing to show halfway. Same provider chain and same block budget as a
 /// rewrite; a model that returns nothing, times out or errors hands over to the next.
 pub async fn complete(
+    app: Option<&AppHandle>,
+    task: &str,
     attempts: &[providers::Attempt],
     system: &str,
     user: &str,
@@ -615,13 +645,27 @@ pub async fn complete(
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
 
-        match tokio::time::timeout(BLOCK_TIMEOUT, complete_once(attempt, system, user)).await {
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(BLOCK_TIMEOUT, complete_once(attempt, system, user)).await;
+        let elapsed = started.elapsed();
+
+        match outcome {
             Ok(Ok(body)) if !body.trim().is_empty() => {
-                return Ok((attempt.model.clone(), body))
+                record_sample(app, task, &attempt.model, true, elapsed);
+                return Ok((attempt.model.clone(), body));
             }
-            Ok(Ok(_)) => last_error = format!("{} returned an empty answer", attempt.model),
-            Ok(Err(err)) => last_error = err,
-            Err(_) => last_error = format!("{} took longer than three minutes", attempt.model),
+            Ok(Ok(_)) => {
+                record_sample(app, task, &attempt.model, false, elapsed);
+                last_error = format!("{} returned an empty answer", attempt.model);
+            }
+            Ok(Err(err)) => {
+                record_sample(app, task, &attempt.model, false, elapsed);
+                last_error = err;
+            }
+            Err(_) => {
+                record_sample(app, task, &attempt.model, false, elapsed);
+                last_error = format!("{} took longer than three minutes", attempt.model);
+            }
         }
     }
     Err(last_error)

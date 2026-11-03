@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
-use crate::{openrouter, prompt, providers};
+use crate::{openrouter, prompt, providers, samples};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -76,9 +76,9 @@ impl RawPayload {
 
 /// The command behind the Grammar Checker view.
 pub async fn check(app: &AppHandle, text: &str, model: Option<String>) -> Result<GrammarResult, String> {
-    let route = providers::resolve(app, model)?;
+    let route = providers::resolve(app, model, samples::GRAMMAR)?;
     let started = std::time::Instant::now();
-    let result = run(&route.attempts, text).await?;
+    let result = run(Some(app), &route.attempts, text).await?;
 
     // A check is a run like any other, so it belongs in the history and in the count
     // of words processed. Its `result` stays empty: the checker suggested, and the
@@ -99,17 +99,21 @@ pub async fn check(app: &AppHandle, text: &str, model: Option<String>) -> Result
 /// The same without a window, for `--grammar` in the self-test.
 pub async fn check_headless(text: &str) -> Result<GrammarResult, String> {
     let route = providers::resolve_headless(None)?;
-    run(&route.attempts, text).await
+    run(None, &route.attempts, text).await
 }
 
-async fn run(attempts: &[providers::Attempt], text: &str) -> Result<GrammarResult, String> {
+async fn run(
+    app: Option<&AppHandle>,
+    attempts: &[providers::Attempt],
+    text: &str,
+) -> Result<GrammarResult, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("There is nothing to check.".to_string());
     }
 
     let (system, user) = prompt::grammar_prompt(text);
-    let (model, raw) = openrouter::complete(attempts, &system, &user).await?;
+    let (model, raw) = openrouter::complete(app, samples::GRAMMAR, attempts, &system, &user).await?;
     let parsed = parse_issues(&raw)?;
     let (issues, dropped, unlocated) = verify(text, parsed);
 

@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use crate::{catalog, openrouter, prompt, providers, store};
+use crate::{catalog, openrouter, prompt, providers, samples, store};
 
 const SAMPLE: &str =
     "The library is very important for the team, and it shows a lot of promise for the next release.";
@@ -122,7 +122,7 @@ pub fn run() -> i32 {
         ];
         let attempt = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            openrouter::stream_block(None, 0, &chain, &system, &user),
+            openrouter::stream_block(None, samples::PARAPHRASE, 0, &chain, &system, &user),
         )
         .await;
 
@@ -248,17 +248,19 @@ async fn grammar_check() -> i32 {
 /// `--rank`: the same table the AI Models view renders, printed to a terminal so the
 /// numbers can be checked without a window.
 async fn rank_table() -> i32 {
-    match catalog::ranked_models().await {
-        Ok(rows) => {
+    match catalog::ranked_headless(samples::PARAPHRASE).await {
+        Ok(catalogue) => {
+            let choice = catalogue.auto_choice.clone();
+            let rows = catalogue.rows;
             let scored = rows.iter().filter(|row| row.score.is_some()).count();
             println!("{} free text models, {scored} with live numbers", rows.len());
             println!(
-                "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6}",
-                "#", "model", "uptime", "latency", "tput", "score"
+                "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6} {:>8}",
+                "#", "model", "uptime", "latency", "tput", "score", "ours"
             );
             for (index, row) in rows.iter().take(15).enumerate() {
                 println!(
-                    "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6}",
+                    "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6} {:>8}",
                     index + 1,
                     row.id,
                     row.uptime
@@ -273,7 +275,16 @@ async fn rank_table() -> i32 {
                     row.score
                         .map(|value| format!("{value:.0}"))
                         .unwrap_or_else(|| "—".to_string()),
+                    // The terminal run has no sample log, so this is what Auto would
+                    // see with no calls of ours yet.
+                    row.our_latency_ms
+                        .map(|ms| format!("{ms}ms"))
+                        .unwrap_or_else(|| "—".to_string()),
                 );
+            }
+            match choice {
+                Some(model) => println!("\nauto would pick {model}"),
+                None => println!("\nauto has nothing to pick from — the table is empty"),
             }
             0
         }

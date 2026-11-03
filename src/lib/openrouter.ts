@@ -36,7 +36,28 @@ export type RankedModel = {
   score: number | null;
   /** 0, 1 or 2: how many of availability and speed the score rests on. */
   evidence: number;
+  /** How many of our own calls this model has answered for this task. */
+  runs: number;
+  successRate: number | null;
+  /** Median of our successful calls, in milliseconds. */
+  ourLatencyMs: number | null;
+  /** Failures in a row, newest first. Three is the demotion. */
+  streak: number;
+  pinned: boolean;
+  /** What would answer this task right now, pin or Auto. */
+  chosen: boolean;
 };
+
+/** The table for one task, plus the choice it implies. */
+export type Catalogue = {
+  task: string;
+  auto: boolean;
+  pinned: string | null;
+  autoChoice: string | null;
+  rows: RankedModel[];
+};
+
+export type ModelTask = "paraphrase" | "grammar";
 
 export type ParaphraseRequest = {
   text: string;
@@ -86,9 +107,20 @@ export async function modelEndpoints(id: string): Promise<ModelEndpoint[]> {
   return invoke<ModelEndpoint[]>("model_endpoints", { id });
 }
 
-export async function modelCatalogue(): Promise<RankedModel[]> {
+export async function modelCatalogue(task: ModelTask): Promise<Catalogue> {
   if (!isDesktop()) throw notDesktop("Reading the model catalogue");
-  return invoke<RankedModel[]>("model_catalogue");
+  return invoke<Catalogue>("model_catalogue", { task });
+}
+
+/** Turning Auto on clears the pin; the two are alternatives. */
+export async function setAutoModel(auto: boolean): Promise<void> {
+  if (!isDesktop()) throw notDesktop("Choosing a model");
+  await invoke("set_auto_model", { auto });
+}
+
+export async function setPinnedModel(model: string | null): Promise<void> {
+  if (!isDesktop()) throw notDesktop("Pinning a model");
+  await invoke("set_pinned_model", { model });
 }
 
 export async function paraphrase(request: ParaphraseRequest): Promise<ParaphraseResult> {

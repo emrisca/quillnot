@@ -11,6 +11,8 @@
 //!   uptime/latency/throughput rows the ranking is built from;
 //! - [`openrouter`] — OAuth PKCE sign-in over a loopback callback, and the chunked,
 //!   streaming completion the workspace calls;
+//! - [`samples`] — our own timing of every call, which is what makes the ranking
+//!   mean something on free endpoints that report no latency at all;
 //! - [`prompt`] — the mode instructions and the block splitter;
 //! - [`updates`] — checking the release feed and installing what it offers;
 //! - [`export`] — writing a run out as a Markdown file.
@@ -21,6 +23,7 @@ mod history;
 mod openrouter;
 mod prompt;
 mod providers;
+mod samples;
 pub mod self_test;
 mod export;
 mod store;
@@ -80,11 +83,33 @@ async fn model_endpoints(id: String) -> Result<Vec<catalog::EndpointRow>, String
     catalog::endpoints(&id).await
 }
 
-/// Every zero-priced model with its best availability and speed, scored. The AI
-/// Models view calls this; nothing here needs an account.
+/// Every zero-priced model, scored for one task, with what Auto picks. The AI Models
+/// view calls this; nothing here needs an account.
 #[tauri::command]
-async fn model_catalogue() -> Result<Vec<catalog::RankedModel>, String> {
-    catalog::ranked_models().await
+async fn model_catalogue(app: AppHandle, task: String) -> Result<catalog::Catalogue, String> {
+    catalog::catalogue(&app, &task).await
+}
+
+/// Turns Auto on or off. Turning it on clears any pin: the two are alternatives, and
+/// a pin that quietly outlived its own switch would be a lie in the UI.
+#[tauri::command]
+fn set_auto_model(app: AppHandle, auto: bool) -> Result<(), String> {
+    let mut settings = store::read_settings(&app);
+    settings.auto_model = if auto { None } else { Some(false) };
+    if auto {
+        settings.pinned_model = None;
+    }
+    store::write_settings(&app, &settings)
+}
+
+/// Pins a model from the AI Models table, or clears the pin when given nothing.
+#[tauri::command]
+fn set_pinned_model(app: AppHandle, model: Option<String>) -> Result<(), String> {
+    let mut settings = store::read_settings(&app);
+    settings.pinned_model = model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+    store::write_settings(&app, &settings)
 }
 
 #[tauri::command]
@@ -252,6 +277,8 @@ pub fn run() {
             list_free_models,
             model_endpoints,
             model_catalogue,
+            set_auto_model,
+            set_pinned_model,
             paraphrase,
             grammar_check,
             list_runs,

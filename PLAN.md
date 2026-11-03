@@ -5,10 +5,10 @@ this paragraph** and **fix what is wrong with it** — using OpenRouter's free m
 subscription and no server of our own; the account is the OpenRouter one each person already
 has, and their calls are billed to their own credits.
 
-Status: **M6 in progress.** The shell, both tools against live free models, the verified
-grammar checker, local history and statistics, the provider list, the updater, and the
-polish pass — shortcuts, tone, sentence comparison, Markdown export, Summarize — all exist.
-What is left is the catalogue's per-call ranking (M7) and Typer (M8).
+Status: **M7 shipped.** The shell, both tools against live free models, the verified
+grammar checker, local history and statistics, the provider list, the updater, the polish
+pass — shortcuts, tone, sentence comparison, Markdown export, Summarize — and the
+catalogue's per-call ranking all exist. What is left is Typer (M8).
 
 Two features carry it past being a QuillBot skin. A **scored catalogue of every free
 endpoint** OpenRouter exposes (§3), so the app calls the model that is fast and up *now*
@@ -318,22 +318,36 @@ knows what a text is *for*, which is the one thing a person still has to judge.
 
 ### M7 · The catalogue and the ranking
 
-`catalog.rs`: the two GETs in §3, cached with their validator, filtered to zero-priced models
-with a text-out endpoint; a `samples` table written by every run; per-task scoring with stored
-weights; Settings → AI Models with the sortable table, Auto mode and pinning. The fallback
-chain in M2 reads this table instead of a hardcoded order.
+`catalog.rs`: the two GETs in §3, filtered to zero-priced models with a text-out endpoint;
+`samples.rs`, the log every call writes to; scoring per task that folds our own numbers into
+the platform's; AI Models with the sortable table, Auto and pinning. The fallback chain reads
+the table instead of a hardcoded order.
 
-**Partly shipped early.** The rail item and the live table exist now: every zero-priced model,
-its best uptime with the window it came from, provider count and context size, one score, and
-availability as up / down / no data. The first real run also set the expectations for what is
-left — OpenRouter reports no latency or throughput at all for these free endpoints, and eleven
-of fourteen report a 100% day-long uptime, so the table currently separates "up", "down" and
-"no evidence" rather than ranking speed. Our own per-call samples are what will make the order
-mean something, which is the rest of this milestone.
+**Shipped.** The table lists every zero-priced model with its best uptime and the window it
+came from, the platform's latency where there is any, our median latency and success rate for
+the chosen task, the call count, and one score; every column sorts. Every call — rewrite or
+grammar check, success or failure — is timed into `samples.jsonl` per model and per task, and
+the score treats the platform's uptime as a prior worth three of our calls, so our own history
+takes over as it accumulates. Three failures in a row halve a model's score until it answers
+again. Auto picks the best model we have actually measured for that task; with nothing
+measured it does *not* fall back to the alphabet, it leaves the run to `openrouter/free`, the
+gateway router. A pin overrides Auto, and the failover chain is the chosen model, two measured
+alternatives, then the router.
+
+The live run that set the expectations still holds: OpenRouter reports no latency or
+throughput at all for these free endpoints, and thirteen of fourteen report a 100% day-long
+uptime, so the platform's half of the score is mostly a reachability check. That is exactly
+why the samples exist.
 
 **Done when:** the table lists every zero-priced endpoint with its uptime and our measured
 latency; Auto picks a model that is not simply the alphabetically first; a model made to fail
 three times running drops down the order and climbs back once it recovers.
+
+**Verified:** `--rank` against the live API — 14 free text models, 13 with numbers, one
+reporting 0%, and Auto falling to the router rather than the alphabet — plus unit tests for
+the prior, the demotion, the recovery, the per-task separation, the pin and the fallback
+filter. Not verified with a connected account: no real run has written a sample on this
+machine yet, so the measured half of the table is untested against live traffic.
 
 ### M8 · Typer
 
