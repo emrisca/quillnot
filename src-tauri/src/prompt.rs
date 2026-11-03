@@ -79,6 +79,38 @@ pub fn grammar_prompt(text: &str) -> (String, String) {
     (GRAMMAR_SYSTEM.to_string(), user)
 }
 
+const SPAN_SYSTEM: &str = "You rewrite one sentence so it can replace itself in a paragraph. \
+You answer with the rewritten sentence only: no preamble, no explanation, no quotation marks, \
+no markdown. You keep its facts, its tense and its function in the paragraph.";
+
+/// One sentence, with the paragraph it sits in as context. The mode instruction is the
+/// same one the workspace uses, so "formal" means here what it means there.
+pub fn sentence_prompt(sentence: &str, context: &str, mode: &str) -> (String, String) {
+    let user = format!(
+        "Rewrite this sentence and nothing else.\n\n{}\n\n\
+         The sentence you are replacing:\n\n{sentence}\n\n\
+         The paragraph it belongs to, for context only, do not rewrite it:\n\n{context}\n\n\
+         Answer with the replacement sentence, ready to paste over the original.",
+        mode_instruction(mode)
+    );
+    (SPAN_SYSTEM.to_string(), user)
+}
+
+const SYNONYM_SYSTEM: &str = "You suggest alternative words. You answer with JSON only: an \
+array of single words, no sentences, no explanations.";
+
+/// Word alternatives that fit the sentence, not a thesaurus dump: "breadth" in "the
+/// breadth of a note" should come back as width or scope, never as loaves.
+pub fn synonym_prompt(word: &str, sentence: &str) -> (String, String) {
+    let user = format!(
+        "Give up to five single words that could replace “{word}” in the sentence below \
+         without changing its meaning or breaking its grammar.\n\n\
+         Answer with a JSON array of strings and nothing else, for example [\"width\", \"scope\"].\n\n\
+         Sentence:\n\n{sentence}"
+    );
+    (SYNONYM_SYSTEM.to_string(), user)
+}
+
 /// Splits on blank lines and regroups paragraphs until `max_chars`.
 ///
 /// Two deliberate properties. A paragraph longer than the budget is left whole
@@ -161,6 +193,23 @@ mod tests {
         assert!(user.contains("Summarise"));
         assert!(user.contains("at most a third of the length"));
         assert!(user.contains("nothing that is not already in the text"));
+    }
+
+    #[test]
+    fn a_sentence_prompt_carries_the_paragraph_but_asks_for_one_sentence() {
+        let (system, user) = sentence_prompt("They are also responsive.", "A. They are also responsive.", "formal");
+        assert!(system.contains("only"));
+        assert!(user.contains("formal register"));
+        assert!(user.contains("do not rewrite it"));
+        assert!(user.contains("They are also responsive."));
+    }
+
+    #[test]
+    fn a_synonym_prompt_asks_for_json_and_names_the_word() {
+        let (system, user) = synonym_prompt("breadth", "they respond to the breadth of a note");
+        assert!(system.contains("JSON only"));
+        assert!(user.contains("“breadth”"));
+        assert!(user.contains("JSON array of strings"));
     }
 
     #[test]

@@ -13,6 +13,8 @@
 //!   streaming completion the workspace calls;
 //! - [`samples`] — our own timing of every call, which is what makes the ranking
 //!   mean something on free endpoints that report no latency at all;
+//! - [`span`] — reworking one sentence or one word of an answer, which is the edit
+//!   people actually make after reading a rewrite;
 //! - [`prompt`] — the mode instructions and the block splitter;
 //! - [`updates`] — checking the release feed and installing what it offers;
 //! - [`export`] — writing a run out as a Markdown file;
@@ -27,6 +29,7 @@ mod openrouter;
 mod prompt;
 mod providers;
 mod samples;
+mod span;
 pub mod self_test;
 mod export;
 mod store;
@@ -39,6 +42,7 @@ use tauri::AppHandle;
 use openrouter::{ParaphraseRequest, ParaphraseResult};
 use providers::ProviderStatus;
 use export::save_markdown;
+use span::{rephrase_sentence, word_synonyms};
 use typer::{
     typer_accessibility, typer_open_settings, typer_pause, typer_plan, typer_resume, typer_start,
     typer_status, typer_stop, Typer,
@@ -290,6 +294,8 @@ pub fn run() {
             set_pinned_model,
             paraphrase,
             grammar_check,
+            rephrase_sentence,
+            word_synonyms,
             list_runs,
             delete_run,
             clear_history,

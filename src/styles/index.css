@@ -2038,3 +2038,126 @@ button:disabled {
 [data-theme="dark"] .typer__pill.is-stopped {
   color: #e4c579;
 }
+
+/* --------------------------------------------------- the sentence menu */
+
+.resultbody {
+  user-select: text;
+}
+
+.selmenu {
+  position: fixed;
+  z-index: 40;
+  width: 268px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 14px 34px rgba(24, 40, 20, 0.16);
+}
+
+.selmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+}
+
+.selmenu__item:hover:not(:disabled) {
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+
+.selmenu__item:disabled {
+  color: var(--muted);
+}
+
+.selmenu__item svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.selmenu__item:hover:not(:disabled) svg {
+  color: var(--green-ink);
+}
+
+.selmenu__rule {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--line-soft);
+}
+
+.selmenu__heading {
+  margin: 4px 10px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.selmenu__words {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.selmenu__word {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+}
+
+.selmenu__word:hover {
+  background: var(--green-soft);
+}
+
+.selmenu__word.is-current {
+  color: var(--green-ink);
+  font-weight: 500;
+}
+
+.selmenu__note {
+  margin: 0 10px 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selmenu__error {
+  margin: 6px 10px;
+  color: #a3402f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.selmenu__close {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  padding: 5px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.selmenu__close:hover {
+  background: var(--line-soft);
+}
+
+[data-theme="dark"] .selmenu {
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .selmenu__error {
+  color: #e08c7a;
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { isDesktop, onDelta, paraphrase } from "../lib/openrouter";
 import { useConnection } from "../lib/connection";
@@ -7,8 +7,10 @@ import { exportMarkdown, fileName, fileStem, markdown } from "../lib/export";
 import { defaultMode, takeRestore } from "../lib/history";
 import { MODES, mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
 import { countWords } from "../lib/text";
+import { isSingleWord, rephraseSentence, sentenceAt, splitSentences, wordSynonyms } from "../lib/span";
 import { ModeTabs } from "./ModeTabs";
 import { Rail, type SideView } from "./Rail";
+import { SelectionMenu } from "./SelectionMenu";
 
 const SAMPLE =
   "This update brings faster Mermaid diagrams that match your theme, reorderable filters in " +
@@ -16,6 +18,33 @@ const SAMPLE =
   "rendered using our new library Pele, which is compatible with the latest Mermaid 12.1.0 " +
   "syntax. They are also responsive to the width of a note, and they can be zoomed and panned " +
   "when they are scaled down.";
+
+/** A selection in the result pane, already widened to the sentence it sits in. */
+type SpanSelection = {
+  start: number;
+  end: number;
+  sentence: string;
+  sentenceStart: number;
+  sentenceEnd: number;
+  index: number;
+  word: string | null;
+  x: number;
+  y: number;
+};
+
+/** Character offset of a range boundary inside the rendered result. */
+function offsetIn(root: HTMLElement, node: Node, offset: number): number | null {
+  if (node.nodeType !== Node.TEXT_NODE) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  let current = walker.nextNode();
+  while (current) {
+    if (current === node) return total + offset;
+    total += current.textContent?.length ?? 0;
+    current = walker.nextNode();
+  }
+  return null;
+}
 
 export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const connection = useConnection();
@@ -34,6 +63,14 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [tipOpen, setTipOpen] = useState(true);
+
+  // The sentence menu: a selection in the result pane, the synonyms for it, and whether
+  // the last span edit is still in flight.
+  const resultRef = useRef<HTMLDivElement | null>(null);
+  const [sel, setSel] = useState<SpanSelection | null>(null);
+  const [synonyms, setSynonyms] = useState<string[] | null>(null);
+  const [spanBusy, setSpanBusy] = useState(false);
+  const [spanError, setSpanError] = useState<string | null>(null);
 
   const live = isDesktop() && connection.connected;
 
@@ -55,6 +92,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setError(null);
     setCopied(false);
     setSaved(null);
+    setSel(null);
 
     try {
       if (!live) {
@@ -92,6 +130,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setError(null);
     setModel(null);
     setSaved(null);
+    setSel(null);
   }
 
   async function copy() {
@@ -100,6 +139,145 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
+
+  /* ------------------------------------------------ one sentence at a time */
+
+  function readSelection() {
+    const container = resultRef.current;
+    if (!container || !output) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setSel(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) {
+      setSel(null);
+      return;
+    }
+    // Offsets are only meaningful if what is on screen is exactly the rewrite. A diff
+    // rendering that dropped or reordered a character would splice in the wrong place,
+    // so the menu stays shut rather than guessing.
+    if (container.textContent !== output) {
+      setSel(null);
+      return;
+    }
+
+    const start = offsetIn(container, range.startContainer, range.startOffset);
+    const end = offsetIn(container, range.endContainer, range.endOffset);
+    if (start === null || end === null || end <= start) {
+      setSel(null);
+      return;
+    }
+
+    const span = sentenceAt(output, start);
+    if (!span) {
+      setSel(null);
+      return;
+    }
+
+    const picked = output.slice(start, end).trim();
+    const index = splitSentences(output).findIndex((entry) => entry.start === span.start);
+    const rect = range.getBoundingClientRect();
+
+    setSpanError(null);
+    setSynonyms(null);
+    setSel({
+      start,
+      end,
+      sentence: span.text,
+      sentenceStart: span.start,
+      sentenceEnd: span.end,
+      index: index < 0 ? 0 : index,
+      word: isSingleWord(picked) ? picked : null,
+      x: Math.max(12, Math.min(rect.left, window.innerWidth - 280)),
+      y: Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - 340)),
+    });
+  }
+
+  async function rephraseSpan() {
+    if (!sel || spanBusy) return;
+    setSpanBusy(true);
+    setSpanError(null);
+    try {
+      const result = await rephraseSentence(sel.sentence, output, mode);
+      setOutput(output.slice(0, sel.sentenceStart) + result.text + output.slice(sel.sentenceEnd));
+      setModel(result.model);
+      setSel(null);
+      window.getSelection()?.removeAllRanges();
+    } catch (caught) {
+      setSpanError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSpanBusy(false);
+    }
+  }
+
+  function revertSpan() {
+    if (!sel) return;
+    const source = splitSentences(input)[sel.index];
+    if (!source) {
+      setSpanError("This sentence has no counterpart in the original text.");
+      return;
+    }
+    setOutput(output.slice(0, sel.sentenceStart) + source.text + output.slice(sel.sentenceEnd));
+    setSel(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  async function copySpan() {
+    if (!sel) return;
+    await navigator.clipboard.writeText(sel.sentence);
+    setSel(null);
+  }
+
+  function swapWord(word: string) {
+    if (!sel) return;
+    setOutput(output.slice(0, sel.start) + word + output.slice(sel.end));
+    setSel(null);
+    window.getSelection()?.removeAllRanges();
+  }
+
+  // Synonyms arrive only for a single selected word, and only once per selection.
+  useEffect(() => {
+    if (!sel?.word) {
+      setSynonyms(null);
+      return;
+    }
+    let live = true;
+    setSynonyms(null);
+    void wordSynonyms(sel.word, sel.sentence)
+      .then((result) => {
+        if (live) setSynonyms(result.words);
+      })
+      .catch((caught) => {
+        if (!live) return;
+        setSynonyms([]);
+        setSpanError(caught instanceof Error ? caught.message : String(caught));
+      });
+    return () => {
+      live = false;
+    };
+  }, [sel?.word, sel?.sentence]);
+
+  // A click anywhere else, or Escape, dismisses the menu without touching the text.
+  useEffect(() => {
+    if (!sel) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".selmenu") || target?.closest(".resultbody")) return;
+      setSel(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSel(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [sel]);
 
   async function exportFile() {
     if (!output) return;
@@ -226,6 +404,12 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
                 </p>
               ) : null}
 
+              <div
+                className="resultbody"
+                ref={resultRef}
+                onMouseUp={readSelection}
+                onKeyUp={readSelection}
+              >
               {comparing && pairs ? (
                 <div className="cmp" aria-label="Sentence comparison">
                   <div className="cmp__head">
@@ -265,6 +449,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
                     : "Your rewrite appears here. Connect an OpenRouter account in Settings and this pane streams from a free model instead."}
                 </p>
               )}
+              </div>
             </div>
 
             <footer className="pane__foot">
@@ -317,6 +502,24 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
           ) : null}
         </div>
       </div>
+
+      {sel ? (
+        <SelectionMenu
+          x={sel.x}
+          y={sel.y}
+          sentence={sel.sentence}
+          word={sel.word}
+          synonyms={synonyms}
+          canRevert={splitSentences(input).length > sel.index}
+          busy={spanBusy}
+          error={spanError}
+          onRephrase={() => void rephraseSpan()}
+          onRevert={revertSpan}
+          onCopy={() => void copySpan()}
+          onSynonym={swapWord}
+          onClose={() => setSel(null)}
+        />
+      ) : null}
 
       <Rail onOpen={onOpen} text={output || input} comparing={comparing} onCompare={output ? () => setComparing((value) => !value) : undefined} />
     </div>
