@@ -537,3 +537,24 @@ detector; the claim is that you can read what the model was told.
    person banned by a site whose terms forbid posing as a human, or flagged by security
    software. It ships opt-in with a visible state; whether its default target is our own field
    or the focused window anywhere is worth deciding before M8 rather than during it.
+
+## Since 0.2.5: one catalogue, one ranking, one chord
+
+The AI Models tab stopped being an OpenRouter table. Every connected provider is asked
+for its model list (`/models` on Groq and Mistral, Gemini's native `models` on Google,
+the configured URL for a local endpoint) and the rows join OpenRouter's in a single
+ranking. Rows from the other providers carry no reported uptime or latency, because those
+providers publish none: their score rests on what this app measures, which is the same
+evidence OpenRouter's rows are blended with.
+
+Auto therefore picks the best row in the whole table, not the best OpenRouter row, and
+falls through the ranking on refusal: best, second best, third, whichever provider they
+live on, then the active provider's configured model and finally the gateway router. A
+model is tried once per block; the duplicate that used to appear when Auto's choice was
+also the first ranked row is gone. Cerebras left the registry: its free access now asks
+for a payment method first, which puts it outside a list that is meant to need no card.
+
+Typer's global chord was already a toggle, but both halves went through the same start
+path, which waited three seconds for focus to move. The chord is pressed in the window
+the text belongs in, so it now starts at once; only the Start button keeps the countdown,
+because only the button leaves focus in this app.

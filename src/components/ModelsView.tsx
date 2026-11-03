@@ -142,7 +142,7 @@ export function ModelsView() {
       <div className="mpage__head">
         <div className="mpage__titles">
           <h2 className="mpage__title">
-            {catalogue ? `${catalogue.rows.length} free models` : "Free models"}
+            {catalogue ? `${catalogue.rows.length} models, one ranking` : "Models"}
             {catalogue ? (
               <span className="mpage__sub">
                 {" "}
@@ -151,14 +151,13 @@ export function ModelsView() {
             ) : null}
           </h2>
           <p className="mpage__note">
-            Scored for the task you pick, from two sources. One is what OpenRouter reports:
-            uptime from the most recent window that says anything, plus latency and
-            throughput over 30 minutes. The other is every call this app has made, timed per
-            model and per task. Our numbers outweigh the platform's as they accumulate, and
-            three failures in a row demote a model until it answers again. A dash means no
-            evidence, never zero. Until this app has called a model for a task, Auto has
-            nothing to go on and leaves the run to the gateway router rather than picking
-            whichever id sorts first.
+            Every model from every provider you have a key for, ranked as one list for the task
+            you pick. Two sources feed the score. One is what a provider reports about itself:
+            OpenRouter publishes uptime, latency and throughput over 30 minutes. The other is
+            every call this app has made, timed per model and per task, and it outweighs the
+            reported numbers as it accumulates. A dash means no evidence, never zero. Auto
+            always sends a run to the best row here, and when that model is rate limited the
+            block moves to the second best, then the third, whichever provider they live on.
           </p>
         </div>
         <button
@@ -221,7 +220,7 @@ export function ModelsView() {
       <div className="mcard">
         {busy && !catalogue ? (
           <p className="empty" style={{ padding: "18px" }}>
-            Asking OpenRouter about every free endpoint…
+            Asking every connected provider about its models…
           </p>
         ) : rows.length > 0 ? (
           <table className="mtable">
@@ -275,6 +274,7 @@ export function ModelsView() {
                       </span>
                     ) : null}
                     <span className="mpills">
+                      <span className="mpill mprovider">{row.provider}</span>
                       <span className="mpill">
                         {row.providers} provider{row.providers === 1 ? "" : "s"}
                       </span>

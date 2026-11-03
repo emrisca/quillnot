@@ -25,6 +25,8 @@ export type ModelEndpoint = {
 /** One row of the AI Models table: the model, its best numbers, and its score. */
 export type RankedModel = {
   id: string;
+  /** Which provider answers for this row: openrouter, google, groq, … */
+  provider: string;
   name: string | null;
   contextLength: number | null;
   providers: number;

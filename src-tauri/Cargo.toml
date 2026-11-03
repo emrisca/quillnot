@@ -1,6 +1,6 @@
 [package]
 name = "quillnot"
-version = "0.2.5"
+version = "0.2.6"
 description = "A desktop paraphrasing and grammar-checking workspace on OpenRouter's free models"
 license = "MIT"
 edition = "2021"

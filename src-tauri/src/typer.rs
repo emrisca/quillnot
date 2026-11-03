@@ -496,6 +496,7 @@ async fn drive(
     control: Arc<Control>,
     steps: Vec<Step>,
     idle_limit: Option<Duration>,
+    countdown: bool,
 ) {
     control.total.store(steps.len(), Ordering::Relaxed);
     control.set(Status::Typing);
@@ -503,8 +504,11 @@ async fn drive(
 
     let mut idle = IdleWatch::new(idle_limit, Instant::now());
 
-    // The countdown, in slices so a stop lands during it rather than after it.
-    let mut waited = 0u64;
+    // The countdown exists for the Start button: pressing it leaves focus in this app,
+    // so the wait is the time to click into the document. The chord has no such
+    // problem — it is pressed in the window the text belongs in — so a run it starts
+    // begins at once. The slices keep a stop landing during the wait either way.
+    let mut waited = if countdown { 0 } else { COUNTDOWN_MS };
     while waited < COUNTDOWN_MS {
         if control.cancel.load(Ordering::Relaxed) {
             finish(&app, &control, Status::Stopped, 0);
@@ -663,7 +667,9 @@ fn chord_fired(app: &AppHandle) {
         ChordAction::Stop => stop_all(app),
         ChordAction::Start => {
             if let Some(armed) = armed {
-                if let Err(err) = start_run(app, armed.text, armed.config) {
+                // No countdown: the chord was pressed in the target window, so the
+                // focus it needs is already there.
+                if let Err(err) = start_run_with(app, armed.text, armed.config, false) {
                     eprintln!("typer: the chord could not start a run: {err}");
                 }
             }
@@ -767,6 +773,17 @@ pub fn typer_plan(text: String, config: Config) -> PlanInfo {
 /// The button and the chord's start half both come through here, so they cannot drift
 /// apart: arming the chord is not a second, weaker way to run.
 pub fn start_run(app: &AppHandle, text: String, config: Config) -> Result<PlanInfo, String> {
+    start_run_with(app, text, config, true)
+}
+
+/// The same run with the countdown optional: the button needs the wait, the chord does
+/// not, and everything else about the two paths is identical on purpose.
+pub fn start_run_with(
+    app: &AppHandle,
+    text: String,
+    config: Config,
+    countdown: bool,
+) -> Result<PlanInfo, String> {
     if text.trim().is_empty() {
         return Err("There is nothing to type yet.".into());
     }
@@ -812,7 +829,7 @@ pub fn start_run(app: &AppHandle, text: String, config: Config) -> Result<PlanIn
     let handle = app.clone();
     let driver = control.clone();
     tauri::async_runtime::spawn(async move {
-        drive(handle, driver, plan.steps, idle_limit).await;
+        drive(handle, driver, plan.steps, idle_limit, countdown).await;
     });
 
     Ok(summary)

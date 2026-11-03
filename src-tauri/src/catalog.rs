@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::openrouter::http;
+use crate::providers::{self, Provider};
 use crate::samples::{self, Evidence};
 use crate::store;
 
@@ -143,6 +144,10 @@ struct EndpointsBody {
 #[serde(rename_all = "camelCase")]
 pub struct PlatformRow {
     pub id: String,
+    /// Which provider serves it. A cache written before the providers were merged has
+    /// no such field, and every row in it was OpenRouter's.
+    #[serde(default = "openrouter_provider")]
+    pub provider: String,
     pub name: Option<String>,
     pub context_length: Option<u64>,
     pub providers: usize,
@@ -163,12 +168,18 @@ fn default_true() -> bool {
     true
 }
 
+fn openrouter_provider() -> String {
+    providers::DEFAULT_PROVIDER.to_string()
+}
+
 /// A catalogue row as the table shows it: what the model is, what the platform reports,
 /// what we measured, and the score those produce together.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedModel {
     pub id: String,
+    /// Which provider answers for this row: `openrouter`, `google`, `groq`, …
+    pub provider: String,
     pub name: Option<String>,
     pub context_length: Option<u64>,
     pub providers: usize,
@@ -625,6 +636,7 @@ async fn platform_from_models(models: Vec<ModelRow>) -> Vec<PlatformRow> {
 
             PlatformRow {
                 id: model.id,
+                provider: providers::DEFAULT_PROVIDER.to_string(),
                 name: model.name,
                 context_length: model.context_length,
                 providers: endpoints.len(),
@@ -638,6 +650,154 @@ async fn platform_from_models(models: Vec<ModelRow>) -> Vec<PlatformRow> {
         .buffer_unordered(CONCURRENCY)
         .collect()
         .await;
+
+    rows
+}
+
+/// What a provider's model listing looks like. OpenAI-shaped providers answer
+/// `{"data":[{"id":…}]}`; Gemini answers `{"models":[{"name":"models/…"}]}`.
+#[derive(Debug, Deserialize)]
+struct ProviderModels {
+    #[serde(default)]
+    data: Vec<ProviderModelRow>,
+    #[serde(default)]
+    models: Vec<GeminiModelRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderModelRow {
+    id: String,
+    #[serde(default)]
+    context_length: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiModelRow {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    input_token_limit: Option<u64>,
+    #[serde(default)]
+    supported_generation_methods: Vec<String>,
+}
+
+/// The models one provider lists, as catalogue rows.
+///
+/// They carry no platform numbers because these providers publish none: the only
+/// evidence behind them is what this app measures on its own calls. A provider that
+/// fails to answer contributes nothing, so one broken free tier cannot empty the table.
+pub async fn provider_rows(
+    provider: &Provider,
+    key: Option<&str>,
+    base_url: &str,
+) -> Vec<PlatformRow> {
+    if base_url.trim().is_empty() || provider.models_path.is_empty() {
+        return Vec::new();
+    }
+    let url = format!("{}{}", base_url.trim_end_matches('/'), provider.models_path);
+    let Ok(client) = http::client() else {
+        return Vec::new();
+    };
+    let mut request = client.get(&url).header("Accept", "application/json");
+    if let Some(key) = key {
+        request = if provider.gemini {
+            request.header("x-goog-api-key", key)
+        } else {
+            request.bearer_auth(key)
+        };
+    }
+    let Ok(response) = request.send().await else {
+        return Vec::new();
+    };
+    if !response.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = response.json::<ProviderModels>().await else {
+        return Vec::new();
+    };
+
+    let mut rows: Vec<PlatformRow> = body
+        .data
+        .into_iter()
+        .filter(|row| is_general_chat_model(&row.id))
+        .map(|row| PlatformRow {
+            id: providers::catalog_id(provider.id, &row.id),
+            provider: provider.id.to_string(),
+            name: None,
+            context_length: row.context_length,
+            providers: 1,
+            uptime: None,
+            uptime_window: None,
+            latency_ms: None,
+            throughput: None,
+            available: true,
+        })
+        .collect();
+
+    // Gemini's own shape: `models/…`, a display name, and the methods a model supports.
+    // A model that cannot generate content cannot rewrite a sentence.
+    for model in body.models {
+        let Some(name) = model.name else { continue };
+        let id = name.strip_prefix("models/").unwrap_or(&name).to_string();
+        let chat = model.supported_generation_methods.is_empty()
+            || model
+                .supported_generation_methods
+                .iter()
+                .any(|method| method == "generateContent");
+        if !chat || !is_general_chat_model(&id) {
+            continue;
+        }
+        rows.push(PlatformRow {
+            id: providers::catalog_id(provider.id, &id),
+            provider: provider.id.to_string(),
+            name: model.display_name,
+            context_length: model.input_token_limit,
+            providers: 1,
+            uptime: None,
+            uptime_window: None,
+            latency_ms: None,
+            throughput: None,
+            available: true,
+        });
+    }
+
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    rows
+}
+
+/// The OpenRouter table plus one row set per connected provider. That is the whole
+/// point of the merged tab: one ranking across every free tier the person has a key
+/// for, instead of a table of OpenRouter and a separate list of settings.
+async fn with_provider_rows(
+    settings: &store::Settings,
+    openrouter: Vec<PlatformRow>,
+) -> Vec<PlatformRow> {
+    let mut rows: Vec<PlatformRow> = openrouter
+        .into_iter()
+        .map(|mut row| {
+            row.provider = providers::DEFAULT_PROVIDER.to_string();
+            row
+        })
+        .collect();
+
+    for provider in providers::PROVIDERS
+        .iter()
+        .filter(|provider| provider.id != providers::DEFAULT_PROVIDER)
+    {
+        let key = store::load_key_for(provider.id);
+        if provider.needs_key && key.is_none() {
+            continue;
+        }
+        let base_url = if provider.id == "custom" {
+            settings.custom_base_url.clone().unwrap_or_default()
+        } else {
+            provider.base_url.to_string()
+        };
+        rows.extend(provider_rows(provider, key.as_deref(), &base_url).await);
+    }
 
     rows
 }
@@ -668,6 +828,7 @@ fn decorate(
 
             RankedModel {
                 id: row.id,
+                provider: row.provider,
                 name: row.name,
                 context_length: row.context_length,
                 providers: row.providers,
@@ -710,14 +871,18 @@ fn decorate(
             .then(a.id.cmp(&b.id))
     });
 
-    // Auto's pick is the best model we have actually measured for this task. Nothing
-    // measured means no opinion, and the honest fallback is the gateway router rather
-    // than whichever id sorts first: thirteen endpoints reporting the same day-long
-    // uptime are indistinguishable, and the alphabet is not evidence. Pinning is a
-    // person overriding all of this, so the pin is the chosen row wherever it ranks.
+    // Auto's pick is the best row in the table, whatever provider it lives on: measured
+    // first, so a model this app has actually called beats one that only looks good on
+    // paper. An unmeasured row is not a lie, it is a model nobody has tried yet, so when
+    // nothing has been measured the best-scored row still answers rather than handing the
+    // run to the gateway router. Pinning is a person overriding all of this, so the pin
+    // is the chosen row wherever it ranks.
     let auto_choice = rows
         .iter()
-        .find(|row| row.runs > 0 && !row.demoted() && row.score.is_some())
+        .find(|row| row.available && !row.demoted() && row.runs > 0 && row.score.is_some())
+        .or_else(|| rows.iter().find(|row| row.available && !row.demoted() && row.score.is_some()))
+        .or_else(|| rows.iter().find(|row| row.available && row.score.is_some()))
+        .or_else(|| rows.iter().find(|row| row.available))
         .or_else(|| rows.iter().find(|row| row.id == ROUTER))
         .map(|row| row.id.clone());
 
@@ -792,20 +957,22 @@ pub async fn catalogue(app: &AppHandle, task: &str) -> Result<Catalogue, String>
     let cached = read_cache(app);
     let etag = cached.as_ref().and_then(|cache| cache.etag.clone());
 
-    let platform = match fetch_platform_if_changed(etag.as_deref()).await {
-        Ok(fetched) => {
-            let (rows, etag) = apply_refresh(cached, fetched);
-            write_cache(app, &rows, etag);
-            rows
-        }
+    let (platform, etag) = match fetch_platform_if_changed(etag.as_deref()).await {
+        Ok(fetched) => apply_refresh(cached, fetched),
         Err(err) => match cached {
             Some(cache) => {
                 eprintln!("catalogue: {err}");
-                cache.rows
+                (cache.rows, cache.etag)
             }
             None => return Err(err),
         },
     };
+
+    // Every connected provider's models join the same table and the same ranking, so
+    // one list answers "what is best for this task" rather than "what does OpenRouter
+    // have".
+    let platform = with_provider_rows(&settings, platform).await;
+    write_cache(app, &platform, etag);
 
     let samples = samples::load(app).unwrap_or_default();
     Ok(decorate(platform, &samples, &task, &settings))
@@ -874,6 +1041,7 @@ mod tests {
     fn platform(id: &str, uptime: Option<f64>) -> PlatformRow {
         PlatformRow {
             id: id.to_string(),
+            provider: providers::DEFAULT_PROVIDER.to_string(),
             name: Some(id.to_string()),
             context_length: Some(8192),
             providers: 1,
@@ -1140,25 +1308,24 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_measured_auto_falls_to_the_router_rather_than_the_alphabet() {
+    fn with_nothing_measured_the_best_reported_row_still_answers() {
         let platform = vec![
             platform("aaa/first", Some(1.0)),
             platform(ROUTER, None),
-            platform("zzz/last", Some(1.0)),
+            platform("zzz/last", Some(0.4)),
         ];
         let catalogue = decorate(platform, &[], samples::PARAPHRASE, &store::Settings::default());
-        assert_eq!(catalogue.auto_choice.as_deref(), Some(ROUTER));
+        // "Best at all times" is the rule: a perfect uptime reported by the provider is
+        // evidence, so the top-scored row answers instead of the gateway router.
+        assert_eq!(catalogue.auto_choice.as_deref(), Some("aaa/first"));
     }
 
     #[test]
-    fn with_nothing_measured_and_no_router_auto_has_no_opinion() {
-        let catalogue = decorate(
-            vec![platform("aaa/first", Some(1.0))],
-            &[],
-            samples::PARAPHRASE,
-            &store::Settings::default(),
-        );
-        assert_eq!(catalogue.auto_choice, None);
+    fn an_unmeasured_row_with_no_numbers_still_answers_when_it_is_all_there_is() {
+        let mut quiet = platform("google::gemini-2.5-flash", None);
+        quiet.provider = "google".into();
+        let catalogue = decorate(vec![quiet], &[], samples::PARAPHRASE, &store::Settings::default());
+        assert_eq!(catalogue.auto_choice.as_deref(), Some("google::gemini-2.5-flash"));
     }
 
     #[test]
