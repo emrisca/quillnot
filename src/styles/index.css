@@ -1211,79 +1211,82 @@ button:disabled {
 
 /* ------------------------------------------------------------------- dark */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e8ece6;
-    --ink-soft: #a8b2a6;
-    --muted: #7d867c;
-    --page: #141714;
-    --card: #1b1f1b;
-    --line: #2a302a;
-    --line-soft: #242924;
-    --green-soft: #23331f;
-    --green-tint: #2c4426;
-    --amber-soft: #2a2415;
-    --amber-line: #453a1e;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-    color-scheme: dark;
-  }
+/* A switch, not a media query. `src/lib/theme.ts` resolves "follow the OS" to a
+   concrete light or dark value — and `index.html` does the same before the first
+   paint — so the attribute is always present and these rules are all the stylesheet
+   needs. A media query here would fight the switch: choosing Light on a dark desktop
+   is the whole point of having one. */
+:root[data-theme="dark"] {
+  --ink: #e8ece6;
+  --ink-soft: #a8b2a6;
+  --muted: #7d867c;
+  --page: #141714;
+  --card: #1b1f1b;
+  --line: #2a302a;
+  --line-soft: #242924;
+  --green-soft: #23331f;
+  --green-tint: #2c4426;
+  --amber-soft: #2a2415;
+  --amber-line: #453a1e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
 
-  .sidebar__item:hover,
-  .rail__item:hover,
-  .iconbtn:hover:not(:disabled) {
-    background: #232823;
-  }
+[data-theme="dark"] .sidebar__item:hover,
+[data-theme="dark"] .rail__item:hover,
+[data-theme="dark"] .iconbtn:hover:not(:disabled) {
+  background: #232823;
+}
 
-  .pill,
-  .chip-btn {
-    background: #222722;
-  }
+[data-theme="dark"] .pill,
+[data-theme="dark"] .chip-btn {
+  background: #222722;
+}
 
-  .modebar__lang {
-    background: #1b1f1b;
-  }
+[data-theme="dark"] .modebar__lang {
+  background: #1b1f1b;
+}
 
-  .input,
-  .btn--quiet,
-  .modelchip,
-  .mpill {
-    background: #242a24;
-  }
+[data-theme="dark"] .input,
+[data-theme="dark"] .btn--quiet,
+[data-theme="dark"] .modelchip,
+[data-theme="dark"] .mpill {
+  background: #242a24;
+}
 
-  .mtable tbody tr:hover td {
-    background: #1e231e;
-  }
+[data-theme="dark"] .mtable tbody tr:hover td {
+  background: #1e231e;
+}
 
-  .mscore__bar {
-    background: #2b322b;
-  }
+[data-theme="dark"] .mscore__bar {
+  background: #2b322b;
+}
 
-  .errline {
-    border-color: #5a3228;
-    background: #2c1d1a;
-    color: #e6a99c;
-  }
+[data-theme="dark"] .errline {
+  border-color: #5a3228;
+  background: #2c1d1a;
+  color: #e6a99c;
+}
 
-  .issue {
-    background: #1e231e;
-  }
+[data-theme="dark"] .issue {
+  background: #1e231e;
+}
 
-  .tip__title,
-  .tip__mode {
-    color: #d8cfa6;
-  }
+[data-theme="dark"] .tip__title,
+[data-theme="dark"] .tip__mode {
+  color: #d8cfa6;
+}
 
-  .tip__body {
-    color: #a89f7a;
-  }
+[data-theme="dark"] .tip__body {
+  color: #a89f7a;
+}
 
-  .tip__spark {
-    background: #3a3118;
-    color: #d8cfa6;
-  }
+[data-theme="dark"] .tip__spark {
+  background: #3a3118;
+  color: #d8cfa6;
+}
 
-  .empty,
-  .editor::placeholder {
-    color: #767f76;
-  }
+[data-theme="dark"] .empty,
+[data-theme="dark"] .editor::placeholder {
+  color: #767f76;
 }

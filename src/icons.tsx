@@ -24,7 +24,9 @@ export type IconName =
   | "download"
   | "warning"
   | "typer"
-  | "models";
+  | "models"
+  | "sun"
+  | "moon";
 
 // Single-path icons: every glyph is one `d`, which keeps the component to a map
 // and avoids an icon package for the twenty-odd marks the shell needs.
@@ -60,6 +62,8 @@ const PATHS: Record<IconName, string> = {
   typer:
     "M3.6 7.6h16.8A1.6 1.6 0 0 1 22 9.2v5.6a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 14.8V9.2a1.6 1.6 0 0 1 1.6-1.6zM6 11h.01M9 11h.01M12 11h.01M15 11h.01M18 11h.01M7 14.4h10",
   models: "M12 3.4 21 8.1l-9 4.7-9-4.7zM3.4 12.1 12 16.5l8.6-4.4M3.4 15.9 12 20.3l8.6-4.4",
+  sun: "M12 16.8a4.8 4.8 0 1 0 0-9.6 4.8 4.8 0 0 0 0 9.6zM12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6",
+  moon: "M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11z",
 };
 
 export function Icon({

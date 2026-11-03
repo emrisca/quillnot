@@ -1,9 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>QuillNot</title>
+    <script>
+      // The theme has to be on <html> before the first paint or the window opens in
+      // one look and re-skins into another. Same rule as `src/lib/theme.ts`: a stored
+      // choice wins, otherwise follow the OS.
+      try {
+        var stored = localStorage.getItem("quillnot:theme");
+        var dark =
+          stored === "dark" ||
+          (stored !== "light" &&
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      } catch (error) {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
