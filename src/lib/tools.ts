@@ -12,10 +12,11 @@ export type RailItem = {
   soon?: boolean;
 };
 
-// Only what a text model can actually do. Paraphrasing and grammar checking are real;
-// everything marked `soon` is planned on the same client — Typer (§4), the model
-// catalogue (§3), summarising and translation, which are the same request with a
-// different prompt. The AI detector, plagiarism checker and humaniser were removed
+// Only what a text model can actually do. Paraphrasing, grammar checking and the model
+// catalogue are real, and summarising is a mode of the paraphraser rather than a tool of
+// its own, because it is the same request with a different prompt. What is still marked
+// `soon` is Typer (§4) and translation. The AI detector, plagiarism checker and humaniser
+// were removed
 // rather than faked: the first two need a trained classifier and a corpus of sources,
 // and the third exists only to defeat the first.
 export const RAIL: RailItem[] = [
@@ -26,7 +27,6 @@ export const RAIL: RailItem[] = [
   // planned feature nobody can see is one nobody asks for. Typer mimics human
   // typing (plan §4); AI Models is the scored free-endpoint catalogue (§3).
   { key: "typer", label: "Typer", icon: "typer", soon: true },
-  { key: "summarizer", label: "Summarizer", icon: "summarize", soon: true },
   { key: "translate", label: "Translate", icon: "translate", soon: true },
   { key: "models", label: "AI Models", icon: "models", tool: "models" },
   { key: "more", label: "More", icon: "more", soon: true },

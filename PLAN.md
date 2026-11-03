@@ -5,9 +5,10 @@ this paragraph** and **fix what is wrong with it** — using OpenRouter's free m
 subscription and no server of our own; the account is the OpenRouter one each person already
 has, and their calls are billed to their own credits.
 
-Status: **M5 in progress.** The shell, both tools against live free models, the verified
-grammar checker, local history and statistics, the provider list and the updater all exist.
-What is left is the catalogue's per-call ranking (M7), Typer (M8), and the polish in M6.
+Status: **M6 in progress.** The shell, both tools against live free models, the verified
+grammar checker, local history and statistics, the provider list, the updater, and the
+polish pass — shortcuts, tone, sentence comparison, Markdown export, Summarize — all exist.
+What is left is the catalogue's per-call ranking (M7) and Typer (M8).
 
 Two features carry it past being a QuillBot skin. A **scored catalogue of every free
 endpoint** OpenRouter exposes (§3), so the app calls the model that is fast and up *now*
@@ -302,6 +303,18 @@ Keyboard shortcuts (⌘↩ to run, ⌘C to copy the result), tone detection in t
 sentence-level diff comparison view, export to Markdown, and the one premium-ish extra worth
 having — summarize — as a mode on the same client, since it is the same request with a
 different prompt.
+
+**Shipped.** ⌘↩ runs and ⌘C copies from anywhere in the workspace, not only with the caret in a
+box, and both leave a selection alone. The right rail reads tone from the words itself —
+contractions, hedges, boosters, formal connectives, warmth — with a certainty meter, because a
+model call per edit would be slow and would change its mind. The result pane compares at
+sentence level alongside the word diff: sentences that survived are paired, a reworded run is
+paired in order, and the footer says how many changed. Export writes a Markdown file with the
+rewrite and the original to Downloads, never overwriting a name. Summarize is a ninth mode on
+the same client, and the prompt asks for at most a third of the length with nothing invented.
+
+The tone reading is a heuristic and the rail calls it a reading, not a verdict; nothing here
+knows what a text is *for*, which is the one thing a person still has to judge.
 
 ### M7 · The catalogue and the ranking
 

@@ -16,6 +16,7 @@ export type Mode =
   | "creative"
   | "expand"
   | "shorten"
+  | "summarize"
   | "custom";
 
 export const MODES: { id: Mode; label: string; hint: string }[] = [
@@ -26,6 +27,7 @@ export const MODES: { id: Mode; label: string; hint: string }[] = [
   { id: "creative", label: "Creative", hint: "Livelier verbs and fresher comparisons, same argument." },
   { id: "expand", label: "Expand", hint: "Adds detail and connective tissue to grow the text." },
   { id: "shorten", label: "Shorten", hint: "Cuts filler so the point arrives sooner." },
+  { id: "summarize", label: "Summarize", hint: "The point in at most a third of the length, using only what is there." },
   { id: "custom", label: "Custom", hint: "Follow your own written instruction — wired up in M2." },
 ];
 
@@ -111,6 +113,7 @@ const PAIRS: Record<Mode, [string, string][]> = {
     ["has the ability to", "can"],
     ["is able to", "can"],
   ],
+  summarize: [],
   custom: [],
 };
 
@@ -163,6 +166,13 @@ function joinShortSentences(text: string): string {
   return out.join(" ");
 }
 
+function summarize(text: string): string {
+  const sentences = text.split(/(?<=[.!?])\s+/).filter((sentence) => sentence.trim().length > 0);
+  if (sentences.length <= 2) return sentences.join(" ");
+  // Two fifths of the sentences, rounded up, so a three-sentence text loses nothing.
+  return sentences.slice(0, Math.max(1, Math.ceil(sentences.length * 0.4))).join(" ");
+}
+
 /**
  * M1's stand-in for the model. Deterministic, offline, and clearly labelled as a
  * mock in the UI — the `Mock` badge in the header exists so this never passes for
@@ -180,6 +190,7 @@ export async function mockParaphrase(text: string, mode: Mode, strength: number)
   if (mode === "expand") output = expand(output);
   if (mode === "shorten") output = shorten(output);
   if (mode === "fluency") output = joinShortSentences(output);
+  if (mode === "summarize") output = summarize(output);
 
   return tidy(output);
 }

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { isDesktop, onDelta, paraphrase } from "../lib/openrouter";
 import { useConnection } from "../lib/connection";
-import { diffWords } from "../lib/diff";
+import { compareSentences, diffWords } from "../lib/diff";
+import { exportMarkdown, fileName, fileStem, markdown } from "../lib/export";
 import { defaultMode, takeRestore } from "../lib/history";
 import { MODES, mockParaphrase, modeLabel, type Mode } from "../lib/paraphrase";
 import { countWords } from "../lib/text";
@@ -29,19 +30,22 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(true);
+  const [comparing, setComparing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   const [tipOpen, setTipOpen] = useState(true);
 
   const live = isDesktop() && connection.connected;
 
   useEffect(() => {
     if (restored) return;
-    void defaultMode().then((saved) => {
-      if (saved && MODES.some((entry) => entry.id === saved)) setMode(saved as Mode);
+    void defaultMode().then((stored) => {
+      if (stored && MODES.some((entry) => entry.id === stored)) setMode(stored as Mode);
     });
   }, [restored]);
 
   const pieces = useMemo(() => (output ? diffWords(input, output) : null), [input, output]);
+  const pairs = useMemo(() => (output ? compareSentences(input, output) : null), [input, output]);
   const inWords = countWords(input);
   const outWords = countWords(output);
 
@@ -50,6 +54,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setBusy(true);
     setError(null);
     setCopied(false);
+    setSaved(null);
 
     try {
       if (!live) {
@@ -86,6 +91,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setOutput("");
     setError(null);
     setModel(null);
+    setSaved(null);
   }
 
   async function copy() {
@@ -94,6 +100,45 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
+
+  async function exportFile() {
+    if (!output) return;
+    try {
+      const path = await exportMarkdown(
+        fileStem(mode),
+        markdown({ original: input, result: output, mode, model }),
+      );
+      setSaved(path ? `Saved ${fileName(path)} to Downloads` : "Markdown downloaded");
+      window.setTimeout(() => setSaved(null), 6000);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  // Shortcuts work from anywhere in the workspace, not just with the caret in a
+  // particular box, so the listener is on the window and re-registered every render:
+  // it closes over the current text, which is cheaper than keeping it in sync.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void run();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "c") {
+        // Leave ⌘C alone when the writer has selected something of their own.
+        if (window.getSelection()?.toString() || !output) return;
+        event.preventDefault();
+        void copy();
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   return (
     <div className="workspace">
@@ -120,9 +165,6 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
               className="editor"
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void run();
-              }}
               placeholder="Paste the paragraph you want rewritten…"
               spellCheck
               aria-label="Text to paraphrase"
@@ -141,21 +183,37 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
           <section className="pane">
             <header className="pane__head">
               <span className="pane__label">
-                Paraphrased · {modeLabel(mode)}
+                {modeLabel(mode)} · Paraphrased
                 {model ? <span className="modelchip">{model}</span> : null}
               </span>
               <div className="pane__actions">
                 <button
                   type="button"
                   className={`chip-btn${highlight ? " is-on" : ""}`}
-                  onClick={() => setHighlight((value) => !value)}
-                  title="Highlight what changed"
+                  onClick={() => {
+                    setComparing(false);
+                    setHighlight(true);
+                  }}
+                  title="Highlight the words that changed"
                   aria-pressed={highlight}
                 >
                   Changes
                 </button>
+                <button
+                  type="button"
+                  className={`chip-btn${comparing ? " is-on" : ""}`}
+                  onClick={() => setComparing((value) => !value)}
+                  disabled={!output}
+                  title="Compare the original and the rewrite sentence by sentence"
+                  aria-pressed={comparing}
+                >
+                  Sentences
+                </button>
                 <button type="button" className="iconbtn" onClick={() => void copy()} title="Copy result" aria-label="Copy result" disabled={!output}>
                   <Icon name={copied ? "check" : "copy"} size={17} />
+                </button>
+                <button type="button" className="iconbtn" onClick={() => void exportFile()} title="Save as Markdown" aria-label="Save as Markdown" disabled={!output}>
+                  <Icon name="download" size={17} />
                 </button>
               </div>
             </header>
@@ -168,7 +226,27 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
                 </p>
               ) : null}
 
-              {output && pieces ? (
+              {comparing && pairs ? (
+                <div className="cmp" aria-label="Sentence comparison">
+                  <div className="cmp__head">
+                    <span>Original</span>
+                    <span>Rewrite</span>
+                  </div>
+                  {pairs.map((pair, index) => (
+                    <div key={index} className={`cmp__pair${pair.changed ? " is-changed" : ""}`}>
+                      <p className="cmp__cell cmp__before">
+                        {pair.before ?? <span className="cmp__gone">— dropped —</span>}
+                      </p>
+                      <p className="cmp__cell cmp__after">
+                        {pair.after ?? <span className="cmp__gone">— removed —</span>}
+                      </p>
+                    </div>
+                  ))}
+                  <p className="cmp__foot">
+                    {pairs.filter((pair) => pair.changed).length} of {pairs.length} sentences changed.
+                  </p>
+                </div>
+              ) : output && pieces ? (
                 pieces.after.map((piece, index) =>
                   piece.changed && highlight ? (
                     <mark key={index} className="hl">
@@ -192,9 +270,20 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
             <footer className="pane__foot">
               <span className="count">
                 {outWords} {outWords === 1 ? "word" : "words"}
+                {outWords > 0 && inWords > 0 ? (
+                  <span className="count count--delta">
+                    {outWords === inWords ? "same length" : `${outWords > inWords ? "+" : ""}${Math.round(((outWords - inWords) / inWords) * 100)}%`}
+                  </span>
+                ) : null}
               </span>
               <span className="count count--soft">
-                {busy ? "streaming…" : output ? "⌘C copies · Changes highlights the diff" : "⌘↩ to run"}
+                {busy
+                  ? "streaming…"
+                  : saved
+                    ? saved
+                    : output
+                      ? "⌘C copies · ⌘↩ runs again"
+                      : "⌘↩ to run"}
               </span>
             </footer>
           </section>
@@ -229,7 +318,7 @@ export function ParaphraseView({ onOpen }: { onOpen: (view: SideView) => void })
         </div>
       </div>
 
-      <Rail onOpen={onOpen} />
+      <Rail onOpen={onOpen} text={output || input} comparing={comparing} onCompare={output ? () => setComparing((value) => !value) : undefined} />
     </div>
   );
 }

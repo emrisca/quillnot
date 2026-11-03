@@ -545,10 +545,11 @@ button:disabled {
 
 .rail {
   display: flex;
+  flex: 0 0 132px;
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 12px 5px;
+  padding: 12px 6px;
   background: var(--card);
   border-left: 1px solid var(--line);
   overflow-y: auto;
@@ -1684,4 +1685,141 @@ button:disabled {
   font-size: 11px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ------------------------------------------------------------ rail and tone */
+
+.rail__item.is-on,
+.rail__item[aria-pressed="true"] {
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+
+.rail__item:disabled {
+  opacity: 0.45;
+}
+
+.rail__item:disabled:hover {
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.rail__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px 7px 10px;
+  border-top: 1px solid var(--line-soft);
+  text-align: center;
+}
+
+.rail__panelhead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.rail__tone {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--green-ink);
+}
+
+.rail__meter {
+  display: block;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.rail__meter i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--green);
+  transition: width var(--dur);
+}
+
+.rail__tonenote {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.rail__signals {
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------- sentence comparison */
+
+.cmp {
+  display: flex;
+  flex-direction: column;
+}
+
+.cmp__head {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-bottom: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.cmp__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.cmp__pair.is-changed {
+  border-left: 2px solid var(--green);
+  padding-left: 10px;
+}
+
+.cmp__cell {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.cmp__before {
+  color: var(--muted);
+}
+
+.cmp__after {
+  color: var(--ink);
+}
+
+.cmp__gone {
+  color: #b3bbb1;
+  font-style: italic;
+}
+
+.cmp__foot {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.count--delta {
+  margin-left: 7px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }

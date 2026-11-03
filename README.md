@@ -8,11 +8,13 @@ Built with Tauri v2, React 19 and Vite.
 
 ## Status
 
-**M5 — updates and releases.** Rewrites stream from the free model you pick, the grammar
-checker only offers a fix for a quote it found in your text, every run is kept locally in a
-JSON log that History and Statistics read, and the app checks its own release feed for
-updates. **Typer** and the per-call ranking of the free catalogue are still ahead; the rail
-marks them dimmed.
+**M6 — polish.** Rewrites stream from the free model you pick, the grammar checker only
+offers a fix for a quote it found in your text, every run is kept locally in a JSON log that
+History and Statistics read, and the app checks its own release feed for updates. The
+workspace now also answers ⌘↩ and ⌘C anywhere, reads the tone of the text in the right rail,
+compares a rewrite sentence by sentence, exports a run as Markdown, and offers Summarize as
+a ninth mode. **Typer** and the per-call ranking of the free catalogue are still ahead; the
+rail marks them dimmed.
 
 The header's `Mock` badge means no account is connected and results come from the local mock
 in `src/lib/paraphrase.ts`, so the app is usable before anyone signs in. Once a key is in the

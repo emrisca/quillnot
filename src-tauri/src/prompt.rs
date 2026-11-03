@@ -23,6 +23,9 @@ fn mode_instruction(mode: &str) -> &'static str {
         "expand" => "Add a little detail and connective tissue so the text reads fuller. \
                      Elaborate only on what is already there.",
         "shorten" => "Cut filler. Say the same thing in fewer words, keeping every fact.",
+        "summarize" => "Summarise: keep the point and every fact it rests on, drop repetition \
+                        and examples, and come back in at most a third of the length. Add \
+                        nothing that is not already in the text.",
         "custom" => "Rewrite for clarity while keeping the meaning and the length.",
         _ => "Rewrite for clarity and natural phrasing. Keep the meaning, the facts and \
               roughly the length.",
@@ -150,6 +153,14 @@ mod tests {
         assert!(user.contains("\"original\" must be copied character for character"));
         assert!(user.contains("\"issues\":[]"));
         assert!(user.ends_with("teh cat sat"));
+    }
+
+    #[test]
+    fn summarize_asks_for_a_third_of_the_length_and_no_invention() {
+        let (_system, user) = paraphrase_prompt("a long report", "summarize", 2);
+        assert!(user.contains("Summarise"));
+        assert!(user.contains("at most a third of the length"));
+        assert!(user.contains("nothing that is not already in the text"));
     }
 
     #[test]

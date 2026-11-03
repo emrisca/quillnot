@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { applyIssue, checkGrammar, type Issue } from "../lib/grammar";
 import { takeRestore } from "../lib/history";
@@ -22,6 +22,7 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const [model, setModel] = useState<string | null>(null);
   const [dropped, setDropped] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const live = isDesktop() && connection.connected;
   const words = countWords(text);
@@ -47,6 +48,34 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
       setBusy(false);
     }
   }
+
+  async function copyText() {
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  // The same window-wide shortcuts as the paraphraser: ⌘↩ checks, ⌘C copies the text
+  // being checked, unless the writer has a selection of their own.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void check();
+        return;
+      }
+      if (event.key.toLowerCase() === "c") {
+        if (window.getSelection()?.toString() || !text) return;
+        event.preventDefault();
+        void copyText();
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   function accept(issue: Issue) {
     // A quote that appears more than once has no position, so there is nothing safe
@@ -85,6 +114,16 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
                 <button
                   type="button"
                   className="iconbtn"
+                  title="Copy this text"
+                  aria-label="Copy this text"
+                  disabled={!text}
+                  onClick={() => void copyText()}
+                >
+                  <Icon name={copied ? "check" : "copy"} size={17} />
+                </button>
+                <button
+                  type="button"
+                  className="iconbtn"
                   title="Clear"
                   aria-label="Clear text"
                   onClick={() => {
@@ -103,9 +142,6 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
               className="editor"
               value={text}
               onChange={(event) => setText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void check();
-              }}
               placeholder="Paste the text you want checked…"
               spellCheck
               aria-label="Text to check"
@@ -225,14 +261,14 @@ export function GrammarView({ onOpen }: { onOpen: (view: SideView) => void }) {
               </span>
               <span className="count count--soft">
                 {model ? <span className="modelchip">{model}</span> : null}
-                {live ? "⌘↩ to check" : "mock · ⌘↩ to check"}
+                {live ? "⌘C copies · ⌘↩ to check" : "mock · ⌘C copies · ⌘↩ to check"}
               </span>
             </footer>
           </section>
         </div>
       </div>
 
-      <Rail onOpen={onOpen} />
+      <Rail onOpen={onOpen} text={text} />
     </div>
   );
 }

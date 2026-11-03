@@ -12,7 +12,8 @@
 //! - [`openrouter`] — OAuth PKCE sign-in over a loopback callback, and the chunked,
 //!   streaming completion the workspace calls;
 //! - [`prompt`] — the mode instructions and the block splitter;
-//! - [`updates`] — checking the release feed and installing what it offers.
+//! - [`updates`] — checking the release feed and installing what it offers;
+//! - [`export`] — writing a run out as a Markdown file.
 
 mod catalog;
 mod grammar;
@@ -21,6 +22,7 @@ mod openrouter;
 mod prompt;
 mod providers;
 pub mod self_test;
+mod export;
 mod store;
 mod updates;
 
@@ -29,6 +31,7 @@ use tauri::AppHandle;
 
 use openrouter::{ParaphraseRequest, ParaphraseResult};
 use providers::ProviderStatus;
+use export::save_markdown;
 use updates::{app_version, check_update, install_update};
 
 /// What the UI needs to know about the account: whether one is connected, and a
@@ -241,6 +244,7 @@ pub fn run() {
             app_version,
             check_update,
             install_update,
+            save_markdown,
             key_status,
             save_key,
             clear_key,
