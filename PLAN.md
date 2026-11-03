@@ -449,9 +449,16 @@ The X11 injector exists: `XTEST` through `x11-dl`, with each keystroke mapped to
 (Latin-1 as itself, anything else in the Unicode keysym range, newline as Return) and a spare
 keycode borrowed through `XChangeKeyboardMapping` for the one keystroke when the layout cannot
 type the character, then restored. The key mapping, the keysym mapping and the four failure
-stages — display, XTest, keymap, post — are unit tested. **Not verified:** the X calls need a
-running X server and this machine has none, so the Linux injector has never posted an event
-either. X11 has no Accessibility permission and no secure-input query, so `supported` and
+stages — display, XTest, keymap, post — are unit tested. The module type-checks for
+`x86_64-unknown-linux-gnu`: it was extracted with its helpers into a scratch crate carrying the
+same `x11-dl` dependency and `cargo check --target x86_64-unknown-linux-gnu` passes, which is
+how two real API mistakes were found and fixed (`x11-dl` names the XTest loader struct
+`Xf86vmode`, and `XChangeKeyboardMapping` takes its keysym array mutably). Checking the whole
+app for that target is not possible on this machine: `libdbus-sys` and the GTK build scripts
+need Linux pkg-config and development headers, which a Windows host cannot provide. **Not
+verified:** the X calls need a running X server and this machine has none, so the Linux
+injector has never posted an event either, and no Linux bundle is built by the release
+workflow. X11 has no Accessibility permission and no secure-input query, so `supported` and
 `trusted` are both true there and the secure-field refusal remains macOS-only. The menu asks
 the Rust side for `supported`, `granted` and `platform`, so each build shows its own
 directions.

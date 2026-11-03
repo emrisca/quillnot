@@ -1268,7 +1268,9 @@ mod inject {
     /// The whole untestable surface: a display pointer and the three X calls that use it.
     struct Server {
         xlib: xlib::Xlib,
-        xtest: xtest::XTest,
+        // x11-dl names the loader struct for libXtst `Xf86vmode`, which is the crate's
+        // slip rather than this code's: it is the thing that holds the XTest symbols.
+        xtest: xtest::Xf86vmode,
         display: *mut xlib::Display,
     }
 
@@ -1279,7 +1281,8 @@ mod inject {
     impl Server {
         fn open() -> Result<Self, String> {
             let xlib = xlib::Xlib::open().map_err(|_| Stage::Display.message().to_string())?;
-            let xtest = xtest::XTest::open().map_err(|_| Stage::XTest.message().to_string())?;
+            let xtest =
+                xtest::Xf86vmode::open().map_err(|_| Stage::XTest.message().to_string())?;
             let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
             if display.is_null() {
                 return Err(Stage::Display.message().to_string());
@@ -1337,13 +1340,14 @@ mod inject {
         }
 
         fn remap(&self, keycode: u8, symbol: xlib::KeySym) -> Result<(), Stage> {
-            let symbols = [symbol];
+            // XChangeKeyboardMapping takes the array mutably, which is why this is `mut`.
+            let mut symbols = [symbol];
             unsafe {
                 (self.xlib.XChangeKeyboardMapping)(
                     self.display,
                     i32::from(keycode),
                     1,
-                    symbols.as_ptr(),
+                    symbols.as_mut_ptr(),
                     1,
                 );
                 (self.xlib.XSync)(self.display, 0);
