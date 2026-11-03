@@ -182,9 +182,11 @@ written through `set_task_weights`, and the penalty table subtracts for a failur
 for replies people undid, and for an endpoint that has been answering 429, each capped so a
 model can always climb back. Tests prove a kept reply outranks an undone one, that changing
 the weights changes the order, and that the rejection penalty moves a repeatedly-rejected
-model down. What the table does not have is an editor on screen: the weights and penalties
-are commands and settings rather than controls, which is the one part of this paragraph
-still thinner than the plan imagined.
+model down. Settings → Ranking edits them on screen: a task picker, the three weights and
+the three penalties as number fields, saved through those same commands, with the Rust side
+clamping what a hand-edited settings file could otherwise turn into nonsense. Until that
+card existed this paragraph's controls were the one part of the plan still thinner than
+the plan imagined.
 
 ## 4. Typer: typing that looks like a person
 

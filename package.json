@@ -1,7 +1,7 @@
 {
   "name": "quillnot",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "description": "A desktop paraphrasing and grammar-checking workspace on OpenRouter's free models.",
   "license": "MIT",

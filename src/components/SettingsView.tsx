@@ -5,6 +5,18 @@ import { clearHistory, defaultMode, listRuns, openDataDir, setDefaultMode } from
 import { isDesktop } from "../lib/openrouter";
 import { MODES, type Mode } from "../lib/paraphrase";
 import {
+  DEFAULT_PENALTIES,
+  DEFAULT_WEIGHTS,
+  RANKING_TASKS,
+  penalties as loadPenalties,
+  setPenalties as savePenalties,
+  setTaskWeights,
+  taskWeights,
+  type Penalties,
+  type RankingTask,
+  type TaskWeights,
+} from "../lib/ranking";
+import {
   appVersion,
   checkUpdate,
   installUpdate,
@@ -15,6 +27,44 @@ import {
 import { ProviderList } from "./ProviderList";
 import type { SideView } from "./Rail";
 
+/**
+ * One number in the ranking card. Kept as a component because six of them in a row would
+ * otherwise be six copies of the same coercion and the same aria-label.
+ */
+function NumberField({
+  label,
+  value,
+  step,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step: number;
+  disabled: boolean;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <label className="numfield">
+      <span className="numfield__label">{label}</span>
+      <input
+        type="number"
+        className="input input--num"
+        min={0}
+        step={step}
+        value={value}
+        aria-label={label}
+        disabled={disabled}
+        onChange={(event) => {
+          // An empty box is a keystroke, not a zero: wait for a number to exist.
+          const next = Number(event.target.value);
+          if (Number.isFinite(next)) onChange(next);
+        }}
+      />
+    </label>
+  );
+}
+
 export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const [mode, setMode] = useState<Mode>("standard");
   const [runs, setRuns] = useState<number | null>(null);
@@ -24,6 +74,14 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
   // over it. The page keeps one compact row that says what the window is for.
   const [providersOpen, setProvidersOpen] = useState(false);
   const [model, setModel] = useState("");
+
+  // The ranking card: one task's weights at a time, plus the penalty table that is
+  // shared by every task.
+  const [task, setTask] = useState<RankingTask>("paraphrase");
+  const [weights, setWeights] = useState<TaskWeights>(DEFAULT_WEIGHTS);
+  const [fines, setFines] = useState<Penalties>(DEFAULT_PENALTIES);
+  const [savingRanking, setSavingRanking] = useState(false);
+  const [rankingNote, setRankingNote] = useState<string | null>(null);
 
   const [version, setVersion] = useState<string | null>(null);
   const [found, setFound] = useState<UpdateInfo | null>(null);
@@ -45,6 +103,26 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
     });
     void defaultModel().then((saved) => {
       if (live && saved) setModel(saved);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void taskWeights(task).then((saved) => {
+      if (live) setWeights(saved);
+    });
+    return () => {
+      live = false;
+    };
+  }, [task]);
+
+  useEffect(() => {
+    let live = true;
+    void loadPenalties().then((saved) => {
+      if (live) setFines(saved);
     });
     return () => {
       live = false;
@@ -101,6 +179,26 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
       setBusy(null);
+    }
+  }
+
+  async function saveRanking() {
+    setSavingRanking(true);
+    setRankingNote(null);
+    try {
+      // Both are written, because the card edits them as one table and leaving half of it
+      // unsaved would be a lie about what the score is using.
+      const [cleanWeights, cleanFines] = await Promise.all([
+        setTaskWeights(task, weights),
+        savePenalties(fines),
+      ]);
+      setWeights(cleanWeights);
+      setFines(cleanFines);
+      setRankingNote("Saved. AI Models is ranked with these numbers from its next refresh.");
+    } catch (failure) {
+      setRankingNote(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSavingRanking(false);
     }
   }
 
@@ -192,6 +290,125 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
                   );
                 }}
               />
+            </div>
+          </div>
+        </section>
+
+        <section className="card">
+          <header className="card__head">
+            <span className="card__icon">
+              <Icon name="stats" size={17} />
+            </span>
+            <h2>Ranking</h2>
+          </header>
+
+          <div className="row">
+            <div className="row__text">
+              <span className="row__label">Task</span>
+              <span className="row__detail">
+                Each task keeps its own weights, because the best paraphraser is not
+                always the best JSON emitter.
+              </span>
+            </div>
+            <div className="row__control">
+              <select
+                className="input input--select"
+                value={task}
+                aria-label="Ranking task"
+                disabled={!isDesktop()}
+                onChange={(event) => setTask(event.target.value as RankingTask)}
+              >
+                {RANKING_TASKS.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="row">
+            <div className="row__text">
+              <span className="row__label">Weights</span>
+              <span className="row__detail">
+                Availability, speed and quality, each from 0 to 1. They need not add up
+                to 1; all three at zero is refused and the defaults come back.
+              </span>
+            </div>
+            <div className="row__control row__numbers">
+              <NumberField
+                label="Availability"
+                value={weights.availability}
+                step={0.05}
+                disabled={!isDesktop()}
+                onChange={(next) => setWeights({ ...weights, availability: next })}
+              />
+              <NumberField
+                label="Speed"
+                value={weights.speed}
+                step={0.05}
+                disabled={!isDesktop()}
+                onChange={(next) => setWeights({ ...weights, speed: next })}
+              />
+              <NumberField
+                label="Quality"
+                value={weights.quality}
+                step={0.05}
+                disabled={!isDesktop()}
+                onChange={(next) => setWeights({ ...weights, quality: next })}
+              />
+            </div>
+          </div>
+
+          <div className="row">
+            <div className="row__text">
+              <span className="row__label">Penalties</span>
+              <span className="row__detail">
+                Points off a score out of 100 for a failure streak, for replies people
+                undid, and for an endpoint answering 429. Each caps at 50.
+              </span>
+            </div>
+            <div className="row__control row__numbers">
+              <NumberField
+                label="Failure"
+                value={fines.failure}
+                step={1}
+                disabled={!isDesktop()}
+                onChange={(next) => setFines({ ...fines, failure: next })}
+              />
+              <NumberField
+                label="Undo"
+                value={fines.rejection}
+                step={1}
+                disabled={!isDesktop()}
+                onChange={(next) => setFines({ ...fines, rejection: next })}
+              />
+              <NumberField
+                label="429"
+                value={fines.rate_limit}
+                step={1}
+                disabled={!isDesktop()}
+                onChange={(next) => setFines({ ...fines, rate_limit: next })}
+              />
+            </div>
+          </div>
+
+          <div className="row">
+            <div className="row__text">
+              <span className="row__detail">
+                {rankingNote ??
+                  "Saving re-scores the AI Models table. It does not change runs already made."}
+              </span>
+            </div>
+            <div className="row__control">
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => void saveRanking()}
+                disabled={!isDesktop() || savingRanking}
+              >
+                {savingRanking ? "Saving…" : "Save ranking"}
+              </button>
             </div>
           </div>
         </section>

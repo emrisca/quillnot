@@ -1677,6 +1677,33 @@ button:disabled {
   padding: 0 6px;
 }
 
+/* The ranking card's six numbers: labels above, boxes in a row, and digits that line up. */
+.row__numbers {
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.numfield {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.numfield__label {
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.input--num {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 30px;
+  padding: 0 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .btn--danger {
   color: #b4432f;
 }
