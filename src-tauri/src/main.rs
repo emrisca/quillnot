@@ -3,5 +3,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `--self-test` exercises the live path in the same binary the keychain entry
+    // belongs to, then exits. Anything else opens the window.
+    if std::env::args().any(|arg| arg == "--self-test") {
+        std::process::exit(quillnot_lib::self_test::run());
+    }
     quillnot_lib::run()
 }

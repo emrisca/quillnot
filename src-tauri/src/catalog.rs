@@ -110,16 +110,17 @@ pub fn is_free_text_model(row: &ModelRow) -> bool {
     text_in && text_out
 }
 
-pub async fn free_models(app: &AppHandle) -> Result<Vec<ModelRow>, String> {
-    match http::get_json::<ModelsResponse>(MODELS_URL).await {
-        Ok(body) => {
-            let mut rows: Vec<ModelRow> = body
-                .data
-                .into_iter()
-                .filter(is_free_text_model)
-                .collect();
-            rows.sort_by(|a, b| a.id.cmp(&b.id));
+/// The same fetch without a window or a cache, for `--self-test`.
+pub async fn free_models_headless() -> Result<Vec<ModelRow>, String> {
+    let body: ModelsResponse = http::get_json(MODELS_URL).await?;
+    let mut rows: Vec<ModelRow> = body.data.into_iter().filter(is_free_text_model).collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(rows)
+}
 
+pub async fn free_models(app: &AppHandle) -> Result<Vec<ModelRow>, String> {
+    match free_models_headless().await {
+        Ok(rows) => {
             if let Ok(path) = store::models_cache_path(app) {
                 if let Ok(bytes) = serde_json::to_vec(&rows) {
                     let _ = std::fs::write(path, bytes);

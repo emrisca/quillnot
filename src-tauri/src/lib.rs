@@ -14,6 +14,7 @@
 mod catalog;
 mod openrouter;
 mod prompt;
+pub mod self_test;
 mod store;
 
 use serde::Serialize;

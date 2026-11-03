@@ -1,13 +1,18 @@
 //! The OpenRouter client: sign-in, and the streaming rewrite.
 //!
 //! Two things live here. The OAuth PKCE flow (no key is ever typed by hand unless
-//! someone wants to) and the completion call that the workspace actually makes.
+//! someone wants to) and the completion call the workspace actually makes.
 //!
 //! The sign-in binds a loopback listener on an ephemeral port, sends the browser to
 //! `openrouter.ai/auth` with a SHA-256 challenge, and takes the `code` that comes
 //! back on `/callback`. That code is exchanged for a *user-controlled* key, which is
 //! written to the OS keychain and never returned to the webview — the frontend only
 //! ever sees [`crate::KeyStatus`].
+//!
+//! The rewrite path takes an `Option<&AppHandle>` rather than an `AppHandle`, for one
+//! concrete reason: [`crate::self_test`] runs it from the same binary the person
+//! signed in with, and the keychain item is scoped to that binary. A test process is
+//! a different identity and macOS would prompt or refuse.
 
 use std::time::Duration;
 
@@ -29,6 +34,13 @@ pub const FALLBACK_MODEL: &str = "openrouter/free";
 /// How long one block may take before we give up on that model. Free models can be
 /// slow, but a stream that has not finished in three minutes is not going to.
 const BLOCK_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long a stream may go without a single byte before it counts as stalled.
+///
+/// The measured failure this exists for: a ~3,000-character block on the free router
+/// opened the stream, sent nothing, and ate the whole three-minute budget. A stalled
+/// stream is a failed block, and a failed block is the fallback's job.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub mod http {
     use std::time::Duration;
@@ -267,7 +279,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_browser(url: &str) -> Result<(), String> {
-    // The empty argument after `start` is the window title; without it, a URL
+    // The empty argument after `start` is the window title; without it a URL
     // containing an ampersand would be read as a command separator.
     std::process::Command::new("cmd")
         .args(["/C", "start", ""])
@@ -316,7 +328,16 @@ struct Delta {
     model: String,
 }
 
+/// The command the workspace calls.
 pub async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<ParaphraseResult, String> {
+    paraphrase_with(Some(&app), request).await
+}
+
+/// The same work without a window, for `--self-test`.
+pub async fn paraphrase_with(
+    app: Option<&AppHandle>,
+    request: ParaphraseRequest,
+) -> Result<ParaphraseResult, String> {
     let key = store::load_key()
         .ok_or_else(|| "Connect an OpenRouter account in Settings first.".to_string())?;
 
@@ -329,10 +350,12 @@ pub async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<Pa
     let strength = request.strength.unwrap_or(2).clamp(1, 4);
     let preferred = request
         .model
-        .or_else(|| store::read_settings(&app).default_model)
+        .or_else(|| app.and_then(|handle| store::read_settings(handle).default_model))
         .unwrap_or_else(|| FALLBACK_MODEL.to_string());
 
-    let blocks = prompt::split_blocks(text, 4000);
+    // 2,500 rather than 4,000 characters per block: the free models stall far less
+    // often on a smaller prompt, and a failed block costs a fraction of the time.
+    let blocks = prompt::split_blocks(text, 2500);
     let mut rewritten: Vec<String> = Vec::with_capacity(blocks.len());
     let mut used = preferred.clone();
 
@@ -340,18 +363,20 @@ pub async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<Pa
         // The separator is emitted as a delta too, so the pane grows exactly as the
         // text will be assembled instead of running paragraphs together mid-stream.
         if index > 0 {
-            let _ = app.emit(
-                DELTA_EVENT,
-                Delta {
-                    block: index,
-                    text: "\n\n".to_string(),
-                    model: used.clone(),
-                },
-            );
+            if let Some(handle) = app {
+                let _ = handle.emit(
+                    DELTA_EVENT,
+                    Delta {
+                        block: index,
+                        text: "\n\n".to_string(),
+                        model: used.clone(),
+                    },
+                );
+            }
         }
 
         let (system, user) = prompt::paraphrase_prompt(block, &mode, strength);
-        let (model, body) = stream_block(&app, &key, &preferred, &system, &user, index).await?;
+        let (model, body) = stream_block(app, index, &key, &preferred, &system, &user).await?;
         used = model;
         rewritten.push(body);
     }
@@ -366,13 +391,13 @@ pub async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<Pa
 /// One block, with the fallback the plan promised: the preferred model first, the
 /// gateway router after it. An empty rewrite counts as a failure — a model that
 /// answers with nothing has not answered.
-async fn stream_block(
-    app: &AppHandle,
+pub async fn stream_block(
+    app: Option<&AppHandle>,
+    index: usize,
     key: &str,
     preferred: &str,
     system: &str,
     user: &str,
-    index: usize,
 ) -> Result<(String, String), String> {
     let mut candidates = vec![preferred.to_string()];
     if preferred != FALLBACK_MODEL {
@@ -384,7 +409,26 @@ async fn stream_block(
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
-        match tokio::time::timeout(BLOCK_TIMEOUT, stream_once(app, key, model, system, user, index)).await {
+
+        let mut sink = |piece: &str| {
+            if let Some(handle) = app {
+                let _ = handle.emit(
+                    DELTA_EVENT,
+                    Delta {
+                        block: index,
+                        text: piece.to_string(),
+                        model: model.clone(),
+                    },
+                );
+            }
+        };
+
+        match tokio::time::timeout(
+            BLOCK_TIMEOUT,
+            stream_once(key, model, system, user, &mut sink),
+        )
+        .await
+        {
             Ok(Ok(body)) if !body.trim().is_empty() => {
                 return Ok((model.clone(), body.trim().to_string()))
             }
@@ -397,12 +441,14 @@ async fn stream_block(
 }
 
 async fn stream_once(
-    app: &AppHandle,
     key: &str,
     model: &str,
     system: &str,
     user: &str,
-    index: usize,
+    // `+ Send` because a Tauri command's future must be `Send`, and this sink is
+    // held across an await. It captures nothing but an AppHandle and a model name,
+    // so it is Send in practice; the bound just has to say so.
+    on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, String> {
     #[derive(Serialize)]
     struct Message<'a> {
@@ -469,8 +515,17 @@ async fn stream_once(
     let mut pending = String::new();
     let mut out = String::new();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("the reply stopped early: {e}"))?;
+    loop {
+        let chunk = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(chunk)) => chunk.map_err(|e| format!("the reply stopped early: {e}"))?,
+            Ok(None) => break,
+            Err(_) => {
+                return Err(format!(
+                    "{model} stopped sending for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                ))
+            }
+        };
         pending.push_str(&String::from_utf8_lossy(&chunk));
 
         while let Some(end) = pending.find("\n\n") {
@@ -496,14 +551,7 @@ async fn stream_once(
                     .and_then(|choice| choice.delta.content)
                 {
                     out.push_str(&delta);
-                    let _ = app.emit(
-                        DELTA_EVENT,
-                        Delta {
-                            block: index,
-                            text: delta,
-                            model: model.to_string(),
-                        },
-                    );
+                    on_delta(&delta);
                 }
             }
         }
