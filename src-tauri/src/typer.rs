@@ -428,46 +428,111 @@ pub fn stop_all(app: &AppHandle) {
     }
 }
 
-/// The stop chord: whatever the platform calls its command key, plus Alt and Shift.
+/// The chord used until someone sets their own: whatever the platform calls its command
+/// key, plus Alt and Shift, and S.
 #[cfg(target_os = "macos")]
-fn stop_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
-    Shortcut::new(
-        Some(Modifiers::SUPER | Modifiers::ALT | Modifiers::SHIFT),
-        Code::KeyS,
-    )
+pub const DEFAULT_STOP_SHORTCUT: &str = "Super+Alt+Shift+KeyS";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_STOP_SHORTCUT: &str = "Control+Alt+Shift+KeyS";
+
+/// The chord currently registered with the OS, so a change can release the old one
+/// instead of leaving two live.
+#[derive(Default)]
+pub struct StopShortcut(Mutex<Option<tauri_plugin_global_shortcut::Shortcut>>);
+
+fn parse_shortcut(accelerator: &str) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+    use tauri_plugin_global_shortcut::Shortcut;
+    Shortcut::try_from(accelerator)
+        .map_err(|err| format!("That is not a shortcut this system accepts: {err}"))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn stop_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
-    Shortcut::new(
-        Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
-        Code::KeyS,
-    )
+/// Registers one chord and remembers it.
+fn apply_stop_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    let shortcut = parse_shortcut(accelerator)?;
+    let handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                stop_all(&handle);
+            }
+        })
+        .map_err(|err| format!("the shortcut could not be registered: {err}"))?;
+
+    *app.state::<StopShortcut>().0.lock().unwrap() = Some(shortcut);
+    Ok(())
+}
+
+/// Lets go of the chord before another one takes its place.
+fn release_stop_shortcut(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let current = app.state::<StopShortcut>().0.lock().unwrap().take();
+    if let Some(shortcut) = current {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+/// The chord this build will use: the person's, or the default.
+pub fn configured_shortcut(app: &AppHandle) -> String {
+    crate::store::read_settings(app)
+        .typer_stop_shortcut
+        .unwrap_or_else(|| DEFAULT_STOP_SHORTCUT.to_string())
 }
 
 /// Registers the stop chord at startup, best-effort.
 ///
 /// Escape still stops a run while this window has focus; this chord is the one that works
 /// when it does not, which is the normal case during a run. Another application may
-/// already own the chord, and that is not a reason to refuse to open the window, so a
-/// refusal is logged rather than returned.
+/// already own the chord, so a refusal falls back to the default rather than leaving the
+/// app with no way to stop a run.
 pub fn register_stop_shortcut(app: &AppHandle) {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-
-    let handle = app.clone();
-    let registered = app
-        .global_shortcut()
-        .on_shortcut(stop_shortcut(), move |_app, _shortcut, event| {
-            if event.state() == ShortcutState::Pressed {
-                stop_all(&handle);
-            }
-        });
-
-    if let Err(err) = registered {
-        eprintln!("typer: the stop shortcut could not be registered: {err}");
+    let wanted = configured_shortcut(app);
+    if apply_stop_shortcut(app, &wanted).is_ok() {
+        return;
     }
+
+    if wanted != DEFAULT_STOP_SHORTCUT {
+        if let Err(err) = apply_stop_shortcut(app, DEFAULT_STOP_SHORTCUT) {
+            eprintln!("typer: no stop shortcut could be registered: {err}");
+        }
+    } else {
+        eprintln!("typer: the stop shortcut is already owned by another application");
+    }
+}
+
+/// The chord the person can see in the menu.
+#[tauri::command]
+pub fn typer_shortcut(app: AppHandle) -> String {
+    configured_shortcut(&app)
+}
+
+/// Takes a chord the person just pressed, makes it live, and remembers it.
+///
+/// The old chord is released first and restored on failure, so a combination the OS
+/// refuses (or another app already owns) cannot leave the panic button missing.
+#[tauri::command]
+pub fn set_typer_shortcut(app: AppHandle, shortcut: String) -> Result<String, String> {
+    let shortcut = shortcut.trim().to_string();
+    if shortcut.is_empty() {
+        return Err("Press a key combination first.".to_string());
+    }
+    // Refuse nonsense before the live chord is touched.
+    parse_shortcut(&shortcut)?;
+
+    let previous = configured_shortcut(&app);
+    release_stop_shortcut(&app);
+
+    if let Err(err) = apply_stop_shortcut(&app, &shortcut) {
+        let _ = apply_stop_shortcut(&app, &previous);
+        return Err(err);
+    }
+
+    let mut settings = crate::store::read_settings(&app);
+    settings.typer_stop_shortcut = Some(shortcut.clone());
+    crate::store::write_settings(&app, &settings)?;
+    Ok(shortcut)
 }
 
 /* ------------------------------------------------------------------- commands */

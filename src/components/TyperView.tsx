@@ -12,6 +12,8 @@ import {
   typerStart,
   typerStatus,
   typerStop,
+  typerShortcut,
+  setTyperShortcut,
   type TyperAccess,
   type TyperConfig,
   type TyperPlan,
@@ -34,9 +36,31 @@ const PLATFORM_NAMES: Record<string, string> = {
 
 const platformName = (id: string) => PLATFORM_NAMES[id] ?? "this system";
 
-/** The stop chord, spelled the way the platform's keyboard spells it. */
-const stopChord = (platform: string | undefined) =>
-  platform === "macos" ? "\u2318\u2325\u21e7S" : "Ctrl+Alt+Shift+S";
+/**
+ * The chord spelled the way the platform's keyboard spells it. The accelerator arrives in
+ * the plugin's spelling ("Control+Alt+Shift+KeyS"), which is not something to put on screen.
+ */
+function prettyChord(accelerator: string, platform: string | undefined): string {
+  const mac = platform === "macos";
+  const parts = accelerator.split("+").filter(Boolean);
+  if (parts.length === 0) return mac ? "\u2318\u2325\u21e7S" : "Ctrl+Alt+Shift+S";
+  return parts
+    .map((part) => {
+      if (part === "Super") return mac ? "\u2318" : "Win";
+      if (part === "Control") return mac ? "\u2303" : "Ctrl";
+      if (part === "Alt") return mac ? "\u2325" : "Alt";
+      if (part === "Shift") return mac ? "\u21e7" : "Shift";
+      if (part.startsWith("Key")) return part.slice(3);
+      if (part.startsWith("Digit")) return part.slice(5);
+      if (part.startsWith("Arrow")) return part.slice(5);
+      return part;
+    })
+    .join(mac ? "" : "+");
+}
+
+/** What the shortcut defaults to before anyone has changed it, per platform. */
+const defaultAccelerator = (platform: string | undefined) =>
+  platform === "macos" ? "Super+Alt+Shift+KeyS" : "Control+Alt+Shift+KeyS";
 
 const LABELS: Record<TyperState["status"], string> = {
   idle: "Ready",
@@ -58,6 +82,16 @@ export function TyperView() {
   const [deadline, setDeadline] = useState(45);
   const [state, setState] = useState<TyperState>(IDLE);
   const [plan, setPlan] = useState<TyperPlan | null>(null);
+  // The stop chord as the OS has it, and whether the next keypress is being captured as a
+  // new one. Capturing listens on the window in the capture phase, so the chord is read
+  // before anything on the page can use the key for itself.
+  const [chord, setChord] = useState("");
+  const [capturing, setCapturing] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  // When the first keystroke landed, for the words-per-minute readout. Start is not the
+  // moment to count from: the three-second countdown would be measured as silence.
+  const [firstKeyAt, setFirstKeyAt] = useState<number | null>(null);
+  const [, setTick] = useState(0);
   // Whether this platform can type at all, and whether it has been allowed to: two
   // answers that lead to two different menus, so they are kept apart.
   const [access, setAccess] = useState<TyperAccess | null>(null);
@@ -81,6 +115,9 @@ export function TyperView() {
     void typerStatus()
       .then(setState)
       .catch(() => setState(IDLE));
+    void typerShortcut()
+      .then(setChord)
+      .catch(() => setChord(""));
 
     let unlisten: (() => void) | undefined;
     void onTyperState((next) => setState(next)).then((off) => {
@@ -111,6 +148,8 @@ export function TyperView() {
 
   async function start() {
     setError(null);
+    setNote(null);
+    setFirstKeyAt(null);
     try {
       const summary = await typerStart(text, config);
       setPlan(summary);
@@ -124,17 +163,79 @@ export function TyperView() {
     }
   }
 
+  // WPM counts five characters to a word, from the first keystroke that landed. The clock
+  // is the wall clock on purpose: pausing a run should lower the average, because that is
+  // what the person watching another window experienced.
+  useEffect(() => {
+    if (state.typed > 0 && firstKeyAt === null) setFirstKeyAt(Date.now());
+    if (firstKeyAt !== null && (state.status === "idle" || (state.status === "typing" && state.typed === 0))) {
+      setFirstKeyAt(null);
+    }
+  }, [state.typed, state.status, firstKeyAt]);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = window.setInterval(() => setTick((count) => count + 1), 500);
+    return () => window.clearInterval(id);
+  }, [running]);
+
+  const wpm =
+    firstKeyAt !== null && state.typed > 0
+      ? Math.round(state.typed / 5 / ((Date.now() - firstKeyAt) / 60000))
+      : 0;
+
+  // Capturing the new chord. A modifier on its own is not a chord, and a chord with no
+  // modifier would swallow that key in every application, so both are refused with a
+  // sentence instead of silently doing nothing.
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setCapturing(false);
+        setNote(null);
+        return;
+      }
+      const code = event.code;
+      if (!code || /^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/.test(code)) return;
+      const parts: string[] = [];
+      if (event.metaKey) parts.push("Super");
+      if (event.ctrlKey) parts.push("Control");
+      if (event.altKey) parts.push("Alt");
+      if (event.shiftKey) parts.push("Shift");
+      if (parts.length === 0) {
+        setError("A global shortcut needs at least one modifier, or it would eat that key everywhere.");
+        return;
+      }
+      setCapturing(false);
+      setError(null);
+      void setTyperShortcut([...parts, code].join("+"))
+        .then((saved) => {
+          setChord(saved);
+          setNote(`Stop chord is now ${prettyChord(saved, access?.platform)}.`);
+        })
+        .catch((caught) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [capturing, access?.platform]);
+
+  const chordText = prettyChord(chord || defaultAccelerator(access?.platform), access?.platform);
+
   // Escape is the panic button and always works, because the person reaching for it is
   // usually watching the wrong window.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || !running) return;
+      if (event.key !== "Escape" || !running || capturing) return;
       event.preventDefault();
       void typerStop().then(setState);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [running]);
+  }, [running, capturing]);
 
   const percent = state.total > 0 ? Math.min(100, Math.round((state.typed / state.total) * 100)) : 0;
   const seconds = plan ? plan.totalMs / 1000 : 0;
@@ -229,7 +330,8 @@ export function TyperView() {
               <span className="pane__label">The run</span>
               <div className="pane__actions">
                 <span className="count count--soft">
-                  {plan ? `${plan.cps.toFixed(1)} keys/s · ${Math.round(seconds)}s` : " "}
+                  {plan ? `${plan.cps.toFixed(1)} keys/s · ${Math.round(seconds)}s` : " "}
+                  {wpm > 0 ? ` · ${wpm} wpm` : ""}
                 </span>
               </div>
             </header>
@@ -279,7 +381,9 @@ export function TyperView() {
                 <span className={`typer__pill is-${state.status}`}>{LABELS[state.status]}</span>
                 <span className="typer__count">
                   {state.typed} of {state.total || plan?.chars || 0} keystrokes
+                  {wpm > 0 ? ` · ${wpm} wpm` : ""}
                 </span>
+                {note ? <span className="count count--soft">{note}</span> : null}
               </div>
               <div className="typer__meter" aria-hidden="true">
                 <i style={{ width: `${percent}%` }} />
@@ -316,33 +420,53 @@ export function TyperView() {
 
                 <label className="typer__row">
                   <span className="typer__label">Finish by</span>
-                  <input
-                    type="checkbox"
-                    checked={deadlineOn}
-                    disabled={running}
-                    onChange={(event) => setDeadlineOn(event.target.checked)}
-                  />
-                  <input
-                    className="typer__num"
-                    type="number"
-                    min={5}
-                    max={3600}
-                    step={5}
-                    value={deadline}
-                    disabled={running || !deadlineOn}
-                    onChange={(event) => setDeadline(Number(event.target.value) || 45)}
-                    aria-label="Seconds to finish in"
-                  />
-                  <span className="typer__value">seconds</span>
+                  <span className="typer__inline">
+                    <input
+                      type="checkbox"
+                      checked={deadlineOn}
+                      disabled={running}
+                      onChange={(event) => setDeadlineOn(event.target.checked)}
+                      aria-label="Finish by a deadline"
+                    />
+                    <input
+                      className="typer__num"
+                      type="number"
+                      min={5}
+                      max={3600}
+                      step={5}
+                      value={deadline}
+                      disabled={running || !deadlineOn}
+                      onChange={(event) => setDeadline(Number(event.target.value) || 45)}
+                      aria-label="Seconds to finish in"
+                    />
+                    <span className="typer__value">seconds</span>
+                  </span>
                 </label>
+                <div className="typer__row">
+                  <span className="typer__label">Stop chord</span>
+                  <span className="typer__inline">
+                    <span className="kbd">{capturing ? "press the keys…" : chordText}</span>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--quiet"
+                      disabled={!desktop}
+                      onClick={() => {
+                        setNote(null);
+                        setError(null);
+                        setCapturing((on) => !on);
+                      }}
+                    >
+                      {capturing ? "Cancel" : "Change"}
+                    </button>
+                  </span>
+                </div>
               </div>
 
               <ul className="typer__rails">
                 <li>Nothing is typed while a password field has focus.</li>
                 <li>The text comes from this editor, never from the clipboard.</li>
                 <li>
-                  {stopChord(access?.platform)} stops it from anywhere, even while another
-                  app has focus.
+                  {chordText} stops it from anywhere, even while another app has focus.
                 </li>
                 <li>Escape stops it too, while QuillNot has focus.</li>
                 <li>

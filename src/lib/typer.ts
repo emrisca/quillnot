@@ -84,6 +84,25 @@ export async function typerOpenSettings(): Promise<void> {
   await invoke("typer_open_settings");
 }
 
+/**
+ * The stop chord registered with the OS, in the plugin's spelling: "Control+Alt+Shift+KeyS".
+ * Empty in a browser, where there is nothing to register.
+ */
+export async function typerShortcut(): Promise<string> {
+  if (!isDesktop()) return "";
+  return invoke<string>("typer_shortcut");
+}
+
+/**
+ * Takes a chord the person pressed and makes it the live one. The answer is the chord the
+ * OS actually accepted, which is not always the one asked for: another app may own it,
+ * and the command then fails with the old chord still in place.
+ */
+export async function setTyperShortcut(shortcut: string): Promise<string> {
+  if (!isDesktop()) throw notDesktop();
+  return invoke<string>("set_typer_shortcut", { shortcut });
+}
+
 export async function onTyperState(handler: (state: TyperState) => void): Promise<UnlistenFn> {
   return listen<TyperState>(TYPER_EVENT, (event) => handler(event.payload));
 }

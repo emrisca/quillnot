@@ -199,6 +199,23 @@ fn set_humanizer(app: AppHandle, skill: String, preset: String) -> Result<(), St
     store::write_settings(&app, &settings)
 }
 
+/* ------------------------------------------------------------- default model */
+
+/// The model every run starts with when nothing is pinned, or `None` for the provider's
+/// own choice. Read by the router and, until this command existed, written by nothing.
+#[tauri::command]
+fn default_model(app: AppHandle) -> Option<String> {
+    store::read_settings(&app).default_model
+}
+
+#[tauri::command]
+fn set_default_model(app: AppHandle, model: String) -> Result<(), String> {
+    let mut settings = store::read_settings(&app);
+    let model = model.trim().to_string();
+    settings.default_model = if model.is_empty() { None } else { Some(model) };
+    store::write_settings(&app, &settings)
+}
+
 /// The mode the workspace opens in; `None` means Standard.
 #[tauri::command]
 fn default_mode(app: AppHandle) -> Option<String> {
@@ -313,6 +330,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(updates::Pending::default())
         .manage(Typer::default())
+        .manage(typer::StopShortcut::default())
         .setup(|app| {
             typer::register_stop_shortcut(app.handle());
             Ok(())
@@ -342,6 +360,8 @@ pub fn run() {
             open_data_dir,
             default_mode,
             set_default_mode,
+            default_model,
+            set_default_model,
             humanizer,
             set_humanizer,
             list_providers,
@@ -358,7 +378,9 @@ pub fn run() {
             typer_resume,
             typer_stop,
             typer_accessibility,
-            typer_open_settings
+            typer_open_settings,
+            typer::typer_shortcut,
+            typer::set_typer_shortcut
         ])
         .run(tauri::generate_context!())
         .expect("error while running QuillNot");

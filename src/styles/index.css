@@ -2179,3 +2179,83 @@ button:disabled {
 [data-theme="dark"] .selmenu__error {
   color: #e08c7a;
 }
+
+/* ------------------------------------------------------------------ providers sheet */
+
+/* The provider list outgrew the settings page, so it opens over it in its own window.
+   Colour comes from `.card`, which the panel keeps; this only sets the frame. */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 18, 11, 0.44);
+  backdrop-filter: blur(3px);
+}
+
+.sheet__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(860px, 100%);
+  max-height: min(760px, 88vh);
+  padding: 0;
+  overflow: hidden;
+}
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.sheet__note {
+  flex: 1;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.sheet__body {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* A chord, shown as keys rather than as the accelerator string it is stored as. */
+.kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* The list keeps its own card on the settings page; inside the window the panel is the
+   card, so the nested one drops its frame. */
+.sheet__body .card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* A row whose control is more than one widget: the group takes the flexible column and
+   starts at its left edge, so a key cap is never stretched to fill the space. */
+.typer__inline {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

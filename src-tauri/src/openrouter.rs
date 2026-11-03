@@ -319,6 +319,12 @@ pub struct ParaphraseRequest {
     /// means the humanizer sent it, and the mode is then whatever the skill says.
     #[serde(default)]
     pub skill: Option<String>,
+    /// A target language, which turns the request into a translation.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// The register a translation keeps: Neutral, Formal or Informal.
+    #[serde(default)]
+    pub formality: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -365,11 +371,25 @@ pub async fn paraphrase_with(
         .map(|skill| skill.trim().to_string())
         .filter(|skill| !skill.is_empty());
 
+    let target = request
+        .target
+        .map(|target| target.trim().to_string())
+        .filter(|target| !target.is_empty());
+    let formality = request
+        .formality
+        .map(|formality| formality.trim().to_string())
+        .filter(|formality| !formality.is_empty())
+        .unwrap_or_else(|| "Neutral".to_string());
+
     // A skill replaces the mode instructions rather than joining them: the humanizer's
-    // whole promise is that the pane shows exactly what the model is told.
-    let mode = match &skill {
-        Some(_) => "humanize".to_string(),
-        None => request.mode.unwrap_or_else(|| "standard".to_string()),
+    // whole promise is that the pane shows exactly what the model is told. A target
+    // language does the same job for Translate.
+    let mode = if skill.is_some() {
+        "humanize".to_string()
+    } else if target.is_some() {
+        "translate".to_string()
+    } else {
+        request.mode.unwrap_or_else(|| "standard".to_string())
     };
     let strength = request.strength.unwrap_or(2).clamp(1, 4);
 
@@ -397,9 +417,10 @@ pub async fn paraphrase_with(
             }
         }
 
-        let (system, user) = match skill.as_deref() {
-            Some(skill) => prompt::skill_prompt(skill, block),
-            None => prompt::paraphrase_prompt(block, &mode, strength),
+        let (system, user) = match (skill.as_deref(), target.as_deref()) {
+            (Some(skill), _) => prompt::skill_prompt(skill, block),
+            (None, Some(target)) => prompt::translate_prompt(block, target, &formality),
+            (None, None) => prompt::paraphrase_prompt(block, &mode, strength),
         };
         let (model, body) =
             stream_block(app, samples::PARAPHRASE, index, &route.attempts, &system, &user).await?;

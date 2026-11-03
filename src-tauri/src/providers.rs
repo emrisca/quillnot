@@ -391,6 +391,7 @@ mod tests {
             pinned_model: None,
             humanizer_skill: None,
             humanizer_preset: None,
+            typer_stop_shortcut: None,
         }
     }
 

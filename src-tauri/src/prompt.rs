@@ -79,6 +79,23 @@ pub fn grammar_prompt(text: &str) -> (String, String) {
     (GRAMMAR_SYSTEM.to_string(), user)
 }
 
+const TRANSLATE_SYSTEM: &str = "You translate text. You return only the translation: no \
+preamble, no explanation, no source text and no markdown fences. You keep every fact, name, \
+number and date, and the paragraph breaks you were given, and you translate meaning rather \
+than word order.";
+
+/// Translation is a rewrite with a different brief: a target language and a register, and
+/// nothing else about the text changes.
+pub fn translate_prompt(block: &str, target: &str, formality: &str) -> (String, String) {
+    let user = format!(
+        "Translate the text below into {target}.\n\
+         Register: {formality}.\n\
+         Keep names, numbers and formatting as they are.\n\n\
+         Text to translate:\n\n{block}"
+    );
+    (TRANSLATE_SYSTEM.to_string(), user)
+}
+
 const SKILL_SYSTEM: &str = "You edit text by following a written skill. The skill is the \
 whole of your brief: apply every rule in it, and where the skill is silent keep the \
 author's meaning, facts, names, numbers and paragraph breaks exactly as they are. You \
@@ -212,6 +229,14 @@ mod tests {
         assert!(user.contains("Summarise"));
         assert!(user.contains("at most a third of the length"));
         assert!(user.contains("nothing that is not already in the text"));
+    }
+
+    #[test]
+    fn a_translation_prompt_names_the_language_and_keeps_the_text_last() {
+        let (_system, user) = translate_prompt("Good morning.", "Spanish", "Formal");
+        assert!(user.contains("into Spanish"));
+        assert!(user.contains("Register: Formal"));
+        assert!(user.ends_with("Good morning."));
     }
 
     #[test]

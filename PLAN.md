@@ -288,7 +288,12 @@ line. A rewrite records both sides, the mode and the model, which is what makes 
 work; a check records the text and what was found, with no result, because the checker only
 suggested. The rail's History and Statistics entries are real views over those rows, Settings
 gained a default mode and a Data card that opens the folder and deletes with a confirmation,
-and the statistics are counted from the log rather than fetched from anywhere.
+and the statistics are counted from the log rather than fetched from anywhere. Settings also
+writes the default model now, which the router has read since M2: the field was in the settings
+file and in the fallback chain, but nothing on screen could set it.
+
+Providers left this page for their own window. The list is longer than the settings column and
+it grows with every provider added, so it opens in a panel over the page from one button.
 
 ### M5 · Updates and releases
 

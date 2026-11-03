@@ -1,35 +1,44 @@
 # QuillNot
 
-A desktop paraphrasing and grammar-checking workspace on
-[OpenRouter](https://openrouter.ai)'s zero-priced models. No subscription, no quota to buy,
-and no text leaves your machine except to the model you picked.
+A desktop writing workspace for paraphrasing, grammar checks, humanizing, translation and
+auto-typing, on [OpenRouter](https://openrouter.ai)'s zero-priced models. No subscription, no
+quota to buy, and no text leaves your machine except to the model you picked.
 
 Built with Tauri v2, React 19 and Vite.
 
 ## Status
 
-Typer is the newest milestone, and it types on macOS and Windows. Rewrites stream from the free
-model you pick, the grammar checker offers a fix only for a quote it found in your text, every
-run is kept in a local JSON log that History and Statistics read, and the app checks its own
-release feed for updates.
+Rewrites stream from the free model you pick, the grammar checker offers a fix only for a quote
+it found in your text, every run is kept in a local JSON log that History and Statistics read,
+and the app checks its own release feed for updates. Translate is the newest tool: the same
+streaming request with a target language and a register where the mode would be, so it needs no
+account of its own and no second provider.
 
 The workspace answers the run and copy shortcuts anywhere, reads tone in the right rail,
 compares a rewrite sentence by sentence, exports a run as Markdown, and offers Summarize
-alongside the other rewrite modes. AI Models scores every free model for the task you are about
-to run, using OpenRouter's endpoint stats and this app's own timing of each call, sorts on any
+alongside the other rewrite modes. AI Models scores every free model for the task you areabout to run, using OpenRouter's endpoint stats and this app's own timing of each call, sorts on any
 column, and lets you leave the choice to Auto or pin one model.
+
+Settings keeps the provider list behind one **Manage providers** button, which opens the list in
+its own window over the page rather than stretching the settings column. The default model field
+beside it is what the router pins every run to, and leaving it empty lets each provider answer
+with the model it prefers.
 
 AI Humanizer is a rewrite whose prompt is a third pane. The skill it shows is sent with every
 block exactly as written, it can be edited, it is remembered between runs, and one of its
-presets is this workspace's unslop style.
+presets is this workspace's unslop style. The rest of the menu covers academic, conversational,
+business, plain English and tightening, and every preset can be edited and reset.
 
 Typer types the text in its editor into whichever window has focus, one keystroke at a time, at
 a human pace, with typos it notices and corrects and a deadline it paces itself to meet. The
 macOS build posts Core Graphics events and needs Accessibility. The Windows build uses
 `SendInput` with `KEYEVENTF_UNICODE`. A build with no injector, X11 so far, says so instead of
 offering a button that does nothing. The stop chord is `⌘⌥⇧S` on macOS and
-`Ctrl+Alt+Shift+S` on Windows, and it works while another window has focus. A run also refuses
-to type into QuillNot itself.
+`Ctrl+Alt+Shift+S` on Windows, and it works while another window has focus. Typer's shortcut
+button listens for the next combination you press and registers it, so the chord is yours; a
+combination the system already owns is refused and the old chord stays live. A run reports its
+words per minute, counted from the first keystroke that landed rather than from Start, so the
+countdown is not measured as silence. A run also refuses to type into QuillNot itself.
 
 Windows has no equivalent of `IsSecureEventInputEnabled`, which is how the macOS build knows a
 password prompt holds the keyboard. There the system's secure desktop is what protects a

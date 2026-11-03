@@ -46,6 +46,10 @@ pub struct Settings {
     /// Which preset that text started from, so the menu still shows the right entry after
     /// the person has edited it.
     pub humanizer_preset: Option<String>,
+    /// Typer's stop chord, in the plugin's spelling: "Control+Alt+Shift+KeyS". Absent
+    /// means the platform default, so clearing it is always a way back to something that
+    /// works.
+    pub typer_stop_shortcut: Option<String>,
 }
 
 impl Settings {

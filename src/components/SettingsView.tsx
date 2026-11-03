@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../icons";
+import { defaultModel, setDefaultModel } from "../lib/defaults";
 import { clearHistory, defaultMode, listRuns, openDataDir, setDefaultMode } from "../lib/history";
 import { isDesktop } from "../lib/openrouter";
 import { MODES, type Mode } from "../lib/paraphrase";
@@ -19,6 +20,11 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
   const [runs, setRuns] = useState<number | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  // The provider list is long enough to swamp this page, so it opens in its own window
+  // over it. The page keeps one compact row that says what the window is for.
+  const [providersOpen, setProvidersOpen] = useState(false);
+  const [model, setModel] = useState("");
+
   const [version, setVersion] = useState<string | null>(null);
   const [found, setFound] = useState<UpdateInfo | null>(null);
   const [busy, setBusy] = useState<"checking" | "installing" | null>(null);
@@ -37,10 +43,23 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
     void appVersion().then((current) => {
       if (live) setVersion(current);
     });
+    void defaultModel().then((saved) => {
+      if (live && saved) setModel(saved);
+    });
     return () => {
       live = false;
     };
   }, []);
+
+  // Escape closes the providers window, the way every other transient surface here does.
+  useEffect(() => {
+    if (!providersOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProvidersOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [providersOpen]);
 
   async function choose(next: Mode) {
     setMode(next);
@@ -88,7 +107,32 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
   return (
     <div className="settings">
       <div className="settings__inner">
-        <ProviderList />
+        <section className="card">
+          <header className="card__head">
+            <span className="card__icon">
+              <Icon name="key" size={17} />
+            </span>
+            <h2>Providers</h2>
+          </header>
+          <div className="row">
+            <div className="row__text">
+              <span className="row__label">Free tiers, keys and accounts</span>
+              <span className="row__detail">
+                Every provider QuillNot can talk to, each key kept in the system keychain.
+                The list is longer than this page, so it opens in its own window.
+              </span>
+            </div>
+            <div className="row__control">
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => setProvidersOpen(true)}
+              >
+                Manage providers
+              </button>
+            </div>
+          </div>
+        </section>
 
         <section className="card">
           <header className="card__head">
@@ -119,6 +163,35 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
                   </option>
                 ))}
               </select>
+            </div>
+          </div>
+
+          <div className="row">
+            <div className="row__text">
+              <span className="row__label">Default model</span>
+              <span className="row__detail">
+                The model every run starts with when nothing is pinned. Leave it empty and
+                each provider answers with the model it prefers.
+              </span>
+            </div>
+            <div className="row__control">
+              <input
+                className="input"
+                value={model}
+                placeholder="the provider's own default"
+                aria-label="Default model"
+                disabled={!isDesktop()}
+                onChange={(event) => setModel(event.target.value)}
+                onBlur={() => {
+                  void setDefaultModel(model).then(() =>
+                    setNote(
+                      model.trim()
+                        ? `Runs now start with ${model.trim()} where that provider offers it.`
+                        : "Default model cleared.",
+                    ),
+                  );
+                }}
+              />
             </div>
           </div>
         </section>
@@ -258,6 +331,37 @@ export function SettingsView({ onOpen }: { onOpen: (view: SideView) => void }) {
           else. There is no QuillNot account and no server in the middle.
         </p>
       </div>
+
+      {providersOpen ? (
+        <div
+          className="sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Providers"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setProvidersOpen(false);
+          }}
+        >
+          <div className="card sheet__panel">
+            <header className="sheet__head">
+              <h2 className="sheet__title">Providers</h2>
+              <span className="sheet__note">
+                Keys live in the system keychain. Nothing here is sent to QuillNot.
+              </span>
+              <button
+                type="button"
+                className="btn btn--sm btn--quiet"
+                onClick={() => setProvidersOpen(false)}
+              >
+                Close
+              </button>
+            </header>
+            <div className="sheet__body">
+              <ProviderList />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

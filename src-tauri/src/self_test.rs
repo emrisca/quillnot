@@ -71,6 +71,8 @@ pub fn run() -> i32 {
             strength: Some(3),
             model: None,
             skill: None,
+            target: None,
+            formality: None,
         };
         match openrouter::paraphrase_with(None, request).await {
             Ok(result) => {
@@ -161,6 +163,8 @@ pub fn run() -> i32 {
                 strength: Some(2),
                 model: None,
                 skill: None,
+                target: None,
+                formality: None,
             };
 
             match openrouter::paraphrase_with(None, request).await {
