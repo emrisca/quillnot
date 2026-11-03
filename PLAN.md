@@ -5,10 +5,11 @@ this paragraph** and **fix what is wrong with it** — using OpenRouter's free m
 subscription and no server of our own; the account is the OpenRouter one each person already
 has, and their calls are billed to their own credits.
 
-Status: **M7 shipped.** The shell, both tools against live free models, the verified
-grammar checker, local history and statistics, the provider list, the updater, the polish
-pass — shortcuts, tone, sentence comparison, Markdown export, Summarize — and the
-catalogue's per-call ranking all exist. What is left is Typer (M8).
+Status: **M8 shipped.** Every milestone in this plan now exists: the shell, both tools
+against live free models, the verified grammar checker, local history and statistics, the
+provider list, the updater, the polish pass, the catalogue's per-call ranking, and Typer.
+What is left is not a milestone but proof — Typer has never posted a keystroke on a desktop
+with Accessibility granted, and no update has installed over a previous version.
 
 Two features carry it past being a QuillBot skin. A **scored catalogue of every free
 endpoint** OpenRouter exposes (§3), so the app calls the model that is fast and up *now*
@@ -355,9 +356,33 @@ The keystroke planner, the cancellable driver and the per-platform injector (§4
 Accessibility request, the secure-field refusal and the shortcut. Paced completion first,
 generated completion after.
 
+**Shipped, macOS only.** `typer.rs` plans text into timed keystrokes: a delay per character
+from a narrow distribution, shorter inside a word and longer at its start, a dwell after
+`,;:` and a longer one after `.!?`, a beat at a line break, and a typo rate that types a
+neighbouring key, pauses, backspaces and retypes. A deadline is met by re-deriving the pace
+from what the last pass actually took, so punctuation dwells cannot push the finish past the
+target, and a pace faster than a person is clamped at 18 keys a second instead of pretending.
+The driver sleeps out each step and checks the stop flag on both sides of every sleep, so
+Escape lands mid-word. The injector posts `CGEvent` keyboard events with the character
+attached as a Unicode string, so no keyboard layout has to be guessed; Return and Delete go
+as real key codes. Nothing is typed while `IsSecureEventInputEnabled` is set, and a run does
+not start without `AXIsProcessTrusted`, which is asked for with a sentence saying why.
+
+The view shows the plan before the run starts — keys per second, keystrokes and estimated
+seconds — and it comes from the same planner the driver follows, so the estimate is not a
+guess. The rail entry stopped being dimmed.
+
 **Done when:** on macOS with Accessibility granted, Typer types a paragraph into TextEdit at a
 human cadence, stops mid-word on the shortcut and resumes, and a "finish by 0:45" run lands
 within two seconds of the target. Nothing is typed while a secure field has focus.
+
+**Verified:** ten unit tests, including the invariant that the keystrokes reproduce the text
+exactly at a 25% typo rate across forty seeds, a 600-character run landing within two seconds
+of a 45-second deadline, the clamp when a deadline is impossible, and determinism under a
+fixed seed. **Not verified:** the injector has never posted an event, because that needs a
+desktop session with Accessibility granted and someone watching TextEdit. The Windows and X11
+injectors do not exist, and those builds report Typer as unavailable rather than offering a
+button that does nothing.
 
 ## 7. What the UI mirrors, and what it deliberately does not
 

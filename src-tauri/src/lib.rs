@@ -15,7 +15,10 @@
 //!   mean something on free endpoints that report no latency at all;
 //! - [`prompt`] — the mode instructions and the block splitter;
 //! - [`updates`] — checking the release feed and installing what it offers;
-//! - [`export`] — writing a run out as a Markdown file.
+//! - [`export`] — writing a run out as a Markdown file;
+//! - [`typer`] — the keystroke planner, the cancellable driver and the macOS injector
+//!   that types into other apps, with Accessibility and secure-field checks in front
+//!   of it.
 
 mod catalog;
 mod grammar;
@@ -27,6 +30,7 @@ mod samples;
 pub mod self_test;
 mod export;
 mod store;
+mod typer;
 mod updates;
 
 use serde::Serialize;
@@ -35,6 +39,10 @@ use tauri::AppHandle;
 use openrouter::{ParaphraseRequest, ParaphraseResult};
 use providers::ProviderStatus;
 use export::save_markdown;
+use typer::{
+    typer_accessibility, typer_open_settings, typer_pause, typer_plan, typer_resume, typer_start,
+    typer_status, typer_stop, Typer,
+};
 use updates::{app_version, check_update, install_update};
 
 /// What the UI needs to know about the account: whether one is connected, and a
@@ -265,6 +273,7 @@ pub fn run() {
         // count.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Pending::default())
+        .manage(Typer::default())
         .invoke_handler(tauri::generate_handler![
             app_version,
             check_update,
@@ -294,7 +303,15 @@ pub fn run() {
             set_active_provider,
             set_provider_model,
             set_custom_endpoint,
-            open_docs
+            open_docs,
+            typer_status,
+            typer_plan,
+            typer_start,
+            typer_pause,
+            typer_resume,
+            typer_stop,
+            typer_accessibility,
+            typer_open_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running QuillNot");

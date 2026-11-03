@@ -6,6 +6,7 @@ import { ParaphraseView } from "./components/ParaphraseView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { StatsView } from "./components/StatsView";
+import { TyperView } from "./components/TyperView";
 import { TopBar } from "./components/TopBar";
 import { Icon } from "./icons";
 import { refreshStatus } from "./lib/connection";
@@ -93,6 +94,7 @@ export default function App() {
           <>
             {tool === "paraphraser" ? <ParaphraseView onOpen={setView} /> : null}
             {tool === "grammar" ? <GrammarView onOpen={setView} /> : null}
+            {tool === "typer" ? <TyperView /> : null}
             {tool === "models" ? <ModelsView /> : null}
             {tool === "settings" ? <SettingsView onOpen={setView} /> : null}
           </>

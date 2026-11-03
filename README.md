@@ -8,15 +8,17 @@ Built with Tauri v2, React 19 and Vite.
 
 ## Status
 
-**M7 — the ranking.** Rewrites stream from the free model you pick, the grammar checker only
+**M8 — Typer.** Rewrites stream from the free model you pick, the grammar checker only
 offers a fix for a quote it found in your text, every run is kept locally in a JSON log that
 History and Statistics read, and the app checks its own release feed for updates. The
 workspace answers ⌘↩ and ⌘C anywhere, reads the tone of the text in the right rail, compares a
 rewrite sentence by sentence, exports a run as Markdown, and offers Summarize as a ninth
 mode. The AI Models view scores every free model for the task you are about to run — from
 OpenRouter's endpoint stats plus this app's own timing of each call — sorts on any column, and
-lets you leave the choice to **Auto** or pin one model. **Typer** is the last milestone; the
-rail marks it dimmed.
+lets you leave the choice to **Auto** or pin one model. Typer types the text in its editor into
+whichever window has focus, one keystroke at a time, at a human cadence, with typos it notices
+and corrects and a deadline it paces itself to meet. It is macOS-only for now: other builds say
+so rather than offering a button that does nothing.
 
 The header's `Mock` badge means no account is connected and results come from the local mock
 in `src/lib/paraphrase.ts`, so the app is usable before anyone signs in. Once a key is in the
