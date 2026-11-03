@@ -9,6 +9,9 @@
  * cannot be located unambiguously is reported without a position instead of
  * being spliced into the wrong sentence.
  */
+import { invoke } from "@tauri-apps/api/core";
+import { isDesktop } from "./openrouter";
+
 export type IssueKind = "spelling" | "grammar" | "punctuation" | "style";
 
 export type Issue = {
@@ -19,6 +22,11 @@ export type Issue = {
   suggestion: string;
   start: number;
   end: number;
+  /**
+   * False when the quote appears more than once in the text. Such an issue is worth
+   * showing but not worth applying: the app cannot know which occurrence was meant.
+   */
+  unique?: boolean;
 };
 
 type Rule = {
@@ -128,7 +136,58 @@ export function findIssues(text: string, limit = 24): Issue[] {
   return kept;
 }
 
-/** M1's stand-in for the model call; M3 keeps the signature and swaps the body. */
+type BackendIssue = {
+  id: string;
+  kind: string;
+  message: string;
+  quote: string;
+  suggestion: string;
+  start: number;
+  end: number;
+  unique: boolean;
+};
+
+export type CheckResult = {
+  issues: Issue[];
+  model: string;
+  /** Triples the backend refused to trust, and issues it could not place. */
+  dropped: number;
+  unlocated: number;
+};
+
+const KINDS: IssueKind[] = ["spelling", "grammar", "punctuation", "style"];
+
+/**
+ * The real check: the model proposes, the Rust side verifies each quote against the
+ * document and returns offsets only for quotes it found exactly once. A browser tab
+ * cannot reach the keychain, so it falls back to the local rule pass — labelled as
+ * such in the UI rather than passed off as a model result.
+ */
+export async function checkGrammar(text: string): Promise<CheckResult> {
+  if (!isDesktop()) {
+    return { issues: await mockCheck(text), model: "local rules", dropped: 0, unlocated: 0 };
+  }
+
+  const reply = await invoke<CheckResult>("grammar_check", { text, model: null });
+  return {
+    ...reply,
+    issues: reply.issues.map((item) => {
+      const issue = item as unknown as BackendIssue;
+      return {
+        id: issue.id,
+        kind: KINDS.includes(issue.kind as IssueKind) ? (issue.kind as IssueKind) : "grammar",
+        message: issue.message,
+        quote: issue.quote,
+        suggestion: issue.suggestion,
+        start: issue.start,
+        end: issue.end,
+        unique: issue.unique,
+      };
+    }),
+  };
+}
+
+/** M1's stand-in for the model call; the browser preview still uses it. */
 export async function mockCheck(text: string): Promise<Issue[]> {
   await new Promise((resolve) => setTimeout(resolve, 320 + Math.min(text.length, 400)));
   return findIssues(text);

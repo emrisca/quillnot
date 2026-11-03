@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { applyIssue, mockCheck, type Issue } from "../lib/grammar";
+import { applyIssue, checkGrammar, type Issue } from "../lib/grammar";
+import { useConnection } from "../lib/connection";
+import { isDesktop } from "../lib/openrouter";
 import { countWords } from "../lib/text";
 
 const SAMPLE =
@@ -9,10 +11,15 @@ const SAMPLE =
   "mention a feature that is very useful ,but nobody tested the install on macOS.";
 
 export function GrammarView() {
+  const connection = useConnection();
   const [text, setText] = useState("");
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [model, setModel] = useState<string | null>(null);
+  const [dropped, setDropped] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
+  const live = isDesktop() && connection.connected;
   const words = countWords(text);
   const counts = useMemo(() => {
     const tally: Record<string, number> = {};
@@ -23,14 +30,24 @@ export function GrammarView() {
   async function check() {
     if (!text.trim() || busy) return;
     setBusy(true);
+    setError(null);
     try {
-      setIssues(await mockCheck(text));
+      const result = await checkGrammar(text);
+      setIssues(result.issues);
+      setModel(result.model);
+      setDropped(result.dropped + result.unlocated);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setIssues(null);
     } finally {
       setBusy(false);
     }
   }
 
   function accept(issue: Issue) {
+    // A quote that appears more than once has no position, so there is nothing safe
+    // to splice. The card stays until the writer edits it by hand.
+    if (issue.unique === false) return;
     const next = applyIssue(text, issue);
     setText(next);
     // Re-run so the remaining cards point at the text that now exists, not at
@@ -38,12 +55,17 @@ export function GrammarView() {
     setIssues(issues ? issues.filter((item) => item.id !== issue.id).map((item) => shift(item, issue)) : null);
   }
 
+  const applyable = (issues ?? []).filter((issue) => issue.unique !== false);
+
   return (
     <div className="workspace">
       <div className="workspace__body">
         <div className="modebar">
           <span className="modebar__static">Checker</span>
-          <span className="modebar__note">Every fix is a suggestion until you accept it.</span>
+          <span className="modebar__note">
+            Every fix is a suggestion until you accept it, and each one was found in your
+            text before it was offered.
+          </span>
         </div>
 
         <div className="panes">
@@ -64,6 +86,8 @@ export function GrammarView() {
                   onClick={() => {
                     setText("");
                     setIssues(null);
+                    setModel(null);
+                    setError(null);
                   }}
                 >
                   <Icon name="trash" size={17} />
@@ -97,15 +121,16 @@ export function GrammarView() {
             <header className="pane__head">
               <span className="pane__label">Suggestions</span>
               <div className="pane__actions">
-                {issues && issues.length > 0 ? (
+                {applyable.length > 0 ? (
                   <button
                     type="button"
                     className="linkbtn"
+                    title="Accept every fix that could be placed in the text"
                     onClick={() => {
                       let next = text;
-                      for (const issue of [...issues].sort((a, b) => b.start - a.start)) next = applyIssue(next, issue);
+                      for (const issue of [...applyable].sort((a, b) => b.start - a.start)) next = applyIssue(next, issue);
                       setText(next);
-                      setIssues([]);
+                      setIssues((issues ?? []).filter((issue) => issue.unique === false));
                     }}
                   >
                     Accept all
@@ -115,8 +140,16 @@ export function GrammarView() {
             </header>
 
             <div className="pane__body pane__body--list">
-              {issues === null ? (
-                <p className="empty">Run the checker and each problem shows up here as a card you can accept or ignore.</p>
+              {error ? (
+                <p className="errline">
+                  <Icon name="warning" size={14} />
+                  <span>{error}</span>
+                </p>
+              ) : issues === null ? (
+                <p className="empty">
+                  Run the checker and each problem shows up here as a card you can accept
+                  or ignore.
+                </p>
               ) : issues.length === 0 ? (
                 <div className="clean">
                   <span className="clean__mark">
@@ -148,7 +181,17 @@ export function GrammarView() {
                           >
                             <Icon name="close" size={15} />
                           </button>
-                          <button type="button" className="btn btn--sm" onClick={() => accept(issue)}>
+                          <button
+                            type="button"
+                            className="btn btn--sm"
+                            disabled={issue.unique === false}
+                            title={
+                              issue.unique === false
+                                ? "This wording appears more than once, so there is no safe place to apply it"
+                                : `Replace with “${issue.suggestion}”`
+                            }
+                            onClick={() => accept(issue)}
+                          >
                             Accept
                           </button>
                         </div>
@@ -159,9 +202,12 @@ export function GrammarView() {
                             span either side of the arrow. */}
                         <span className="issue__old">{issue.quote.trim() ? issue.quote : "␣␣"}</span>
                         <Icon name="arrow" size={13} />
-                        <span className="issue__new">{issue.suggestion}</span>
+                        <span className="issue__new">{issue.suggestion || "␣"}</span>
                       </p>
-                      <p className="issue__message">{issue.message}</p>
+                      <p className="issue__message">
+                        {issue.message}
+                        {issue.unique === false ? " Found more than once, so it has no position." : ""}
+                      </p>
                     </article>
                   ))}
                 </>
@@ -169,8 +215,14 @@ export function GrammarView() {
             </div>
 
             <footer className="pane__foot">
-              <span className="count count--soft">{issues ? `${issues.length} open` : "not run"}</span>
-              <span className="count count--soft">⌘↩ to check</span>
+              <span className="count count--soft">
+                {issues ? `${issues.length} open` : "not run"}
+                {dropped > 0 ? ` · ${dropped} not trusted` : ""}
+              </span>
+              <span className="count count--soft">
+                {model ? <span className="modelchip">{model}</span> : null}
+                {live ? "⌘↩ to check" : "mock · ⌘↩ to check"}
+              </span>
             </footer>
           </section>
         </div>
@@ -192,7 +244,7 @@ export function GrammarView() {
 
 /** Keeps a remaining card pointing at the same words after an earlier fix changed the length. */
 function shift(issue: Issue, applied: Issue): Issue {
-  if (issue.start < applied.start) return issue;
+  if (!issue.unique || issue.start < applied.start) return issue;
   const delta = applied.suggestion.length - (applied.end - applied.start);
   return { ...issue, start: issue.start + delta, end: issue.end + delta };
 }

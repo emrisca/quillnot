@@ -33,6 +33,10 @@ pub fn run() -> i32 {
             return rank_table().await;
         }
 
+        if std::env::args().any(|arg| arg == "--grammar") {
+            return grammar_check().await;
+        }
+
         println!("QuillNot self-test");
         // `--long` adds a thousand-word run, which is the only way to exercise the
         // block splitter against a real model instead of a fixture.
@@ -184,6 +188,61 @@ pub fn run() -> i32 {
 
         0
     })
+}
+
+/// `--grammar`: a paragraph with planted errors in, verified issues out.
+///
+/// This is M3's done-when, run against the live provider: every issue the checker
+/// offers must quote words that really are at the offsets it reports, and a paragraph
+/// that is wrong on purpose must produce something.
+async fn grammar_check() -> i32 {
+    const PARAGRAPH: &str = "Their is a problem with the the release notes, and it dont mention the \
+        new installer . The installer also fails alot on older machines, i think.";
+
+    match crate::grammar::check_headless(PARAGRAPH).await {
+        Ok(result) => {
+            println!(
+                "{} issue(s) from {} · {} untrusted triple(s) dropped · {} without a position",
+                result.issues.len(),
+                result.model,
+                result.dropped,
+                result.unlocated
+            );
+
+            let mut misplaced = 0;
+            for issue in &result.issues {
+                let placed = if issue.unique {
+                    let actual = crate::grammar::slice_utf16(PARAGRAPH, issue.start, issue.end);
+                    if actual.as_deref() != Some(issue.quote.as_str()) {
+                        misplaced += 1;
+                        "MISPLACED"
+                    } else {
+                        "verified"
+                    }
+                } else {
+                    "unplaced"
+                };
+                println!(
+                    "  {:<10} [{}–{}] {:?} → {:?} · {}",
+                    placed, issue.start, issue.end, issue.quote, issue.suggestion, issue.message
+                );
+            }
+
+            if misplaced > 0 {
+                println!("  FAILED — {misplaced} issue(s) point at words that are not their quote");
+                return 1;
+            }
+            if result.issues.is_empty() {
+                println!("  FAILED — a paragraph with planted errors produced no issues");
+                return 1;
+            }
+            0
+        }
+        Err(err) => {
+            println!("grammar check failed — {err}");
+            1
+        }
+    }
 }
 
 /// `--rank`: the same table the AI Models view renders, printed to a terminal so the

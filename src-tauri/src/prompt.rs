@@ -47,6 +47,35 @@ pub fn paraphrase_prompt(block: &str, mode: &str, strength: u8) -> (String, Stri
     (SYSTEM.to_string(), user)
 }
 
+const GRAMMAR_SYSTEM: &str = "You are a careful copy editor. You report only real mistakes: \
+spelling, grammar, punctuation and clear style problems. You never rewrite for taste, you never \
+comment on content, and you never invent a problem to seem useful. You answer with JSON only.";
+
+/// The grammar request.
+///
+/// Every issue must quote the text exactly: the app searches for the quote itself and
+/// ignores any character offsets the model offers, because those are wrong nearly
+/// every time while quotes are reliable. That contract is spelled out here rather than
+/// assumed, including what to do about a doubled space, which has no visible original.
+pub fn grammar_prompt(text: &str) -> (String, String) {
+    let user = format!(
+        "Find the mistakes in the text below.\n\n\
+         Answer with a single JSON object and nothing else:\n\
+         {{\"issues\":[{{\"original\":\"...\",\"replacement\":\"...\",\"message\":\"...\",\"category\":\"spelling|grammar|punctuation|style\"}}]}}\n\n\
+         Rules:\n\
+         - \"original\" must be copied character for character from the text, including its \
+           spaces and punctuation. Do not summarise it and do not fix it there.\n\
+         - Keep \"original\" as short as it can be and still be unique in the text: a word, a \
+           phrase, at most a sentence.\n\
+         - \"replacement\" is what that span becomes. It may be empty to delete something.\n\
+         - \"message\" is one short sentence a writer would understand.\n\
+         - For a doubled space or a space before punctuation, quote the run of spaces itself.\n\
+         - No issue if the text is already correct: answer {{\"issues\":[]}}. Never pad the list.\n\n\
+         Text:\n\n{text}"
+    );
+    (GRAMMAR_SYSTEM.to_string(), user)
+}
+
 /// Splits on blank lines and regroups paragraphs until `max_chars`.
 ///
 /// Two deliberate properties. A paragraph longer than the budget is left whole
@@ -112,6 +141,15 @@ mod tests {
     #[test]
     fn empty_input_yields_no_blocks() {
         assert!(split_blocks("   \n\n  ", 100).is_empty());
+    }
+
+    #[test]
+    fn the_grammar_prompt_asks_for_exact_quotes_and_json() {
+        let (system, user) = grammar_prompt("teh cat sat");
+        assert!(system.contains("JSON only"));
+        assert!(user.contains("\"original\" must be copied character for character"));
+        assert!(user.contains("\"issues\":[]"));
+        assert!(user.ends_with("teh cat sat"));
     }
 
     #[test]

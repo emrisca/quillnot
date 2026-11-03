@@ -582,6 +582,150 @@ async fn stream_once(
     Ok(out)
 }
 
+/// One whole answer, not a stream.
+///
+/// The grammar checker needs the complete JSON before it can verify a single quote, so
+/// there is nothing to show halfway. Same provider chain and same block budget as a
+/// rewrite; a model that returns nothing, times out or errors hands over to the next.
+pub async fn complete(
+    attempts: &[providers::Attempt],
+    system: &str,
+    user: &str,
+) -> Result<(String, String), String> {
+    let mut last_error = String::new();
+    for (index, attempt) in attempts.iter().enumerate() {
+        if index > 0 {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+
+        match tokio::time::timeout(BLOCK_TIMEOUT, complete_once(attempt, system, user)).await {
+            Ok(Ok(body)) if !body.trim().is_empty() => {
+                return Ok((attempt.model.clone(), body))
+            }
+            Ok(Ok(_)) => last_error = format!("{} returned an empty answer", attempt.model),
+            Ok(Err(err)) => last_error = err,
+            Err(_) => last_error = format!("{} took longer than three minutes", attempt.model),
+        }
+    }
+    Err(last_error)
+}
+
+async fn complete_once(
+    attempt: &providers::Attempt,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Message<'a> {
+        role: &'a str,
+        content: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct Body<'a> {
+        model: &'a str,
+        messages: Vec<Message<'a>>,
+        stream: bool,
+        temperature: f32,
+    }
+
+    #[derive(Deserialize)]
+    struct Reply {
+        #[serde(default)]
+        choices: Vec<ReplyChoice>,
+    }
+
+    #[derive(Deserialize)]
+    struct ReplyChoice {
+        #[serde(default)]
+        message: ReplyMessage,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct ReplyMessage {
+        #[serde(default)]
+        content: Option<String>,
+    }
+
+    let body = Body {
+        model: attempt.model.as_str(),
+        messages: vec![
+            Message {
+                role: "system",
+                content: system,
+            },
+            Message {
+                role: "user",
+                content: user,
+            },
+        ],
+        stream: false,
+        // Editing wants the model's most careful answer, not its most varied one.
+        temperature: 0.2,
+    };
+
+    let host = host_of(&attempt.base_url);
+    let mut outgoing = http::client()?
+        .post(format!(
+            "{}/chat/completions",
+            attempt.base_url.trim_end_matches('/')
+        ))
+        .json(&body);
+    if let Some(key) = attempt.key.as_deref() {
+        outgoing = outgoing.bearer_auth(key);
+    }
+    if attempt.openrouter {
+        outgoing = outgoing
+            .header("HTTP-Referer", "https://github.com/emrisca/quillnot")
+            .header("X-Title", "QuillNot");
+    }
+
+    let response = outgoing
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {host}: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await.unwrap_or_default();
+        return Err(status_error(&host, &attempt.model, status, retry_after, &body));
+    }
+
+    let reply: Reply = response
+        .json()
+        .await
+        .map_err(|e| format!("could not read {host}'s reply: {e}"))?;
+    reply
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .ok_or_else(|| format!("{host} answered without any content"))
+}
+
+fn status_error(
+    host: &str,
+    model: &str,
+    status: reqwest::StatusCode,
+    retry_after: Option<String>,
+    body: &str,
+) -> String {
+    match status.as_u16() {
+        429 => match retry_after {
+            Some(seconds) => format!("{model} is rate limited right now (retry after {seconds}s)."),
+            None => format!("{model} is rate limited right now."),
+        },
+        401 | 403 => format!("{host} rejected the key — check it in Settings."),
+        404 => format!("{model} is not available on this account."),
+        _ => format!("{host} answered {status}: {}", http::clip(body)),
+    }
+}
+
 #[derive(Deserialize)]
 struct CompletionChunk {
     #[serde(default)]

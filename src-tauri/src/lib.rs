@@ -14,6 +14,7 @@
 //! - [`prompt`] — the mode instructions and the block splitter.
 
 mod catalog;
+mod grammar;
 mod openrouter;
 mod prompt;
 mod providers;
@@ -82,6 +83,17 @@ async fn model_catalogue() -> Result<Vec<catalog::RankedModel>, String> {
 #[tauri::command]
 async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<ParaphraseResult, String> {
     openrouter::paraphrase(app.clone(), request).await
+}
+
+/// The grammar check. Every span in the reply was found by searching the text for the
+/// model's quote, so the frontend can trust the offsets enough to splice with them.
+#[tauri::command]
+async fn grammar_check(
+    app: AppHandle,
+    text: String,
+    model: Option<String>,
+) -> Result<grammar::GrammarResult, String> {
+    grammar::check(&app, &text, model).await
 }
 
 /* ---------------------------------------------------------------- providers */
@@ -184,6 +196,7 @@ pub fn run() {
             model_endpoints,
             model_catalogue,
             paraphrase,
+            grammar_check,
             list_providers,
             save_provider_key,
             clear_provider_key,

@@ -240,6 +240,15 @@ Structured-output request returning issue triples; local verification of each qu
 cards with accept / ignore / accept-all; offsets re-applied to the editor text so a second run
 sees the corrected document. Underline rendering of the flagged spans in the input pane.
 
+**Mostly shipped.** `grammar.rs` does the verification half: the model returns triples, the
+app searches the document for each quote, and a span exists only for a quote found exactly
+once. A quote that is not in the text is dropped — an invented quote is not evidence of a
+mistake — and one that appears twice is shown without a position. Parsing survives a fenced
+block, a bare array, a preamble sentence and a reply cut off mid-object. The view is wired to
+it: real issues, accept, ignore, accept-all (which skips anything unplaceable), the model that
+answered and how many triples were refused. What remains is the underline rendering of the
+flagged spans inside the input pane.
+
 **Done when:** a paragraph with planted spelling, punctuation and agreement errors yields
 issues whose quotes are found in the text, and accepting all of them produces clean prose.
 
