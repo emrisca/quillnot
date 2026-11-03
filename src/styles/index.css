@@ -871,6 +871,207 @@ button:disabled {
   text-align: center;
 }
 
+/* -------------------------------------------------------------- models view */
+
+.mpage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  gap: 10px;
+}
+
+.mpage__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mpage__titles {
+  min-width: 0;
+}
+
+.mpage__title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.mpage__sub {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.mpage__note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  max-width: 74ch;
+}
+
+.mcard {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.mtable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+
+.mtable thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mtable td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+
+.mtable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.mtable tbody tr:hover td {
+  background: #fafcf8;
+}
+
+.mrank {
+  width: 34px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mname {
+  font-weight: 550;
+  margin-right: 5px;
+}
+
+.mid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.mpills {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.mpill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #f1f4ef;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.mnum {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  width: 1%;
+}
+
+.mdash {
+  color: #bcc4ba;
+}
+
+.mstate {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: #d3d9d1;
+}
+
+.mstate.is-up {
+  background: var(--green);
+}
+
+.mstate.is-down {
+  background: #d1503f;
+}
+
+.mstate.is-unknown {
+  background: #d3d9d1;
+}
+
+.mwindow {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 9.5px;
+  color: var(--muted);
+}
+
+.mscore {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.mscore__bar {
+  width: 56px;
+  height: 5px;
+  border-radius: 3px;
+  background: #edf1ea;
+  overflow: hidden;
+}
+
+.mscore__fill {
+  display: block;
+  height: 100%;
+  background: var(--green);
+  border-radius: 3px;
+}
+
+.mevidence {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.mevidence i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #dbe0d9;
+}
+
+.mevidence i.on {
+  background: var(--green);
+}
+
 /* ------------------------------------------------------------- account card */
 
 .card__state {
@@ -1044,8 +1245,17 @@ button:disabled {
 
   .input,
   .btn--quiet,
-  .modelchip {
+  .modelchip,
+  .mpill {
     background: #242a24;
+  }
+
+  .mtable tbody tr:hover td {
+    background: #1e231e;
+  }
+
+  .mscore__bar {
+    background: #2b322b;
   }
 
   .errline {

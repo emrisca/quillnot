@@ -22,6 +22,22 @@ export type ModelEndpoint = {
   throughput_last_30m: number | null;
 };
 
+/** One row of the AI Models table: the model, its best numbers, and its score. */
+export type RankedModel = {
+  id: string;
+  name: string | null;
+  contextLength: number | null;
+  providers: number;
+  uptime: number | null;
+  /** Which window the uptime came from: "5m", "30m" or "1d". */
+  uptimeWindow: string | null;
+  latencyMs: number | null;
+  throughput: number | null;
+  score: number | null;
+  /** 0, 1 or 2: how many of availability and speed the score rests on. */
+  evidence: number;
+};
+
 export type ParaphraseRequest = {
   text: string;
   mode: string;
@@ -68,6 +84,11 @@ export async function freeModels(): Promise<FreeModel[]> {
 export async function modelEndpoints(id: string): Promise<ModelEndpoint[]> {
   if (!isDesktop()) throw notDesktop("Reading endpoints");
   return invoke<ModelEndpoint[]>("model_endpoints", { id });
+}
+
+export async function modelCatalogue(): Promise<RankedModel[]> {
+  if (!isDesktop()) throw notDesktop("Reading the model catalogue");
+  return invoke<RankedModel[]>("model_catalogue");
 }
 
 export async function paraphrase(request: ParaphraseRequest): Promise<ParaphraseResult> {

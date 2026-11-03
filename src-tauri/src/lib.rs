@@ -67,6 +67,13 @@ async fn model_endpoints(id: String) -> Result<Vec<catalog::EndpointRow>, String
     catalog::endpoints(&id).await
 }
 
+/// Every zero-priced model with its best availability and speed, scored. The AI
+/// Models view calls this; nothing here needs an account.
+#[tauri::command]
+async fn model_catalogue() -> Result<Vec<catalog::RankedModel>, String> {
+    catalog::ranked_models().await
+}
+
 #[tauri::command]
 async fn paraphrase(app: AppHandle, request: ParaphraseRequest) -> Result<ParaphraseResult, String> {
     openrouter::paraphrase(app.clone(), request).await
@@ -87,6 +94,7 @@ pub fn run() {
             sign_in,
             list_free_models,
             model_endpoints,
+            model_catalogue,
             paraphrase
         ])
         .run(tauri::generate_context!())

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { GrammarView } from "./components/GrammarView";
+import { ModelsView } from "./components/ModelsView";
 import { ParaphraseView } from "./components/ParaphraseView";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
@@ -23,6 +24,7 @@ export default function App() {
         <TopBar tool={tool} />
         {tool === "paraphraser" ? <ParaphraseView /> : null}
         {tool === "grammar" ? <GrammarView /> : null}
+        {tool === "models" ? <ModelsView /> : null}
         {tool === "settings" ? <SettingsView /> : null}
       </div>
     </div>

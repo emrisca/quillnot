@@ -29,6 +29,10 @@ pub fn run() -> i32 {
     };
 
     runtime.block_on(async {
+        if std::env::args().any(|arg| arg == "--rank") {
+            return rank_table().await;
+        }
+
         println!("QuillNot self-test");
         // `--long` adds a thousand-word run, which is the only way to exercise the
         // block splitter against a real model instead of a fixture.
@@ -172,4 +176,43 @@ pub fn run() -> i32 {
 
         0
     })
+}
+
+/// `--rank`: the same table the AI Models view renders, printed to a terminal so the
+/// numbers can be checked without a window.
+async fn rank_table() -> i32 {
+    match catalog::ranked_models().await {
+        Ok(rows) => {
+            let scored = rows.iter().filter(|row| row.score.is_some()).count();
+            println!("{} free text models, {scored} with live numbers", rows.len());
+            println!(
+                "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6}",
+                "#", "model", "uptime", "latency", "tput", "score"
+            );
+            for (index, row) in rows.iter().take(15).enumerate() {
+                println!(
+                    "{:<3} {:<44} {:>8} {:>9} {:>9} {:>6}",
+                    index + 1,
+                    row.id,
+                    row.uptime
+                        .map(|value| format!("{:.0}%", value * 100.0))
+                        .unwrap_or_else(|| "—".to_string()),
+                    row.latency_ms
+                        .map(|value| format!("{value:.0}ms"))
+                        .unwrap_or_else(|| "—".to_string()),
+                    row.throughput
+                        .map(|value| format!("{value:.0}/s"))
+                        .unwrap_or_else(|| "—".to_string()),
+                    row.score
+                        .map(|value| format!("{value:.0}"))
+                        .unwrap_or_else(|| "—".to_string()),
+                );
+            }
+            0
+        }
+        Err(err) => {
+            println!("ranking failed — {err}");
+            1
+        }
+    }
 }

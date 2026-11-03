@@ -1,6 +1,6 @@
 import type { IconName } from "../icons";
 
-export type ToolId = "paraphraser" | "grammar" | "settings";
+export type ToolId = "paraphraser" | "grammar" | "models" | "settings";
 
 export type RailItem = {
   key: string;
@@ -28,7 +28,7 @@ export const RAIL: RailItem[] = [
   { key: "typer", label: "Typer", icon: "typer", soon: true },
   { key: "summarizer", label: "Summarizer", icon: "summarize", soon: true },
   { key: "translate", label: "Translate", icon: "translate", soon: true },
-  { key: "models", label: "AI Models", icon: "models", soon: true },
+  { key: "models", label: "AI Models", icon: "models", tool: "models" },
   { key: "more", label: "More", icon: "more", soon: true },
 ];
 
@@ -40,5 +40,6 @@ export const RAIL_FOOTER: RailItem[] = [
 export const TITLES: Record<ToolId, string> = {
   paraphraser: "Paraphrasing Tool",
   grammar: "Grammar Checker",
+  models: "AI Models",
   settings: "Settings",
 };

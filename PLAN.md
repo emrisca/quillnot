@@ -270,6 +270,14 @@ with a text-out endpoint; a `samples` table written by every run; per-task scori
 weights; Settings → AI Models with the sortable table, Auto mode and pinning. The fallback
 chain in M2 reads this table instead of a hardcoded order.
 
+**Partly shipped early.** The rail item and the live table exist now: every zero-priced model,
+its best uptime with the window it came from, provider count and context size, one score, and
+availability as up / down / no data. The first real run also set the expectations for what is
+left — OpenRouter reports no latency or throughput at all for these free endpoints, and eleven
+of fourteen report a 100% day-long uptime, so the table currently separates "up", "down" and
+"no evidence" rather than ranking speed. Our own per-call samples are what will make the order
+mean something, which is the rest of this milestone.
+
 **Done when:** the table lists every zero-priced endpoint with its uptime and our measured
 latency; Auto picks a model that is not simply the alphabetically first; a model made to fail
 three times running drops down the order and climbs back once it recovers.
