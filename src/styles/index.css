@@ -428,17 +428,15 @@ button:disabled {
 }
 
 /* The skill reads as instructions, so it is set in a mono face: a person editing a
-   prompt wants to see line breaks and rules line up, not prose. */
+   prompt wants to see line breaks and rules line up, not prose. The background is the
+   pane's own, never a literal colour. A hardcoded light field put light ink on light
+   paper the moment the dark theme was on, which is how this pane shipped unreadable. */
 .skill__text {
   font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.65;
-  background: #fbfcf9;
   border-top: 1px solid var(--line-soft);
-}
-
-.skill__text:focus {
-  background: var(--card);
+  scrollbar-gutter: stable;
 }
 
 .count {

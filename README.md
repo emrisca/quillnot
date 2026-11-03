@@ -105,6 +105,7 @@ src/
     diff.ts               word-level LCS used to highlight what changed
     tools.ts              what the rail contains
   styles/index.css        the whole look, tokens first
+skills/unslop.md          the house style the Unslop preset sends verbatim
 src-tauri/                the Tauri v2 shell: keychain, providers, catalogue, Typer, updates
 ```
 

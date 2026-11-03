@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isDesktop, type ParaphraseResult } from "./openrouter";
+import { UNSLOP_SKILL } from "./unslop";
 
 /**
  * The skill is the whole of the humanizer's brief.
@@ -24,49 +25,22 @@ export const DEFAULT_PRESET: SkillPreset = {
 };
 
 /**
- * The house style from this workspace's `unslop` skill, cut down to what a model can act
- * on in one pass. Rule numbers are dropped because the model has no file to look them up
- * in; the substance is kept.
+ * This workspace's own unslop skill, byte for byte, from `skills/unslop.md`.
+ *
+ * It is longer than a prompt would normally be, and that is the point: the rule numbers
+ * and the reasons are part of the skill, and the person can cut it down in the pane.
  */
 export const UNSLOP_PRESET: SkillPreset = {
   id: "unslop",
   label: "Unslop",
-  skill: `Remove the tells that make writing sound machine-generated. Keep the meaning and match the intended tone.
-
-Content
-- Delete superficial -ing tails ("highlighting...", "ensuring...", "showcasing...") or replace them with a fact.
-- Replace vague attributions ("experts believe", "reports suggest", "critics argue") with a source or delete them.
-
-Language
-- Replace AI vocabulary with plain words: additionally, crucial, delve, enhance, foster, garner, intricate, landscape, pivotal, showcase, tapestry, testament, underscore, vibrant.
-- Say "is" or "has" instead of "serves as", "stands as", "boasts", "features".
-- Drop "not just X, but Y" and state the point once.
-- Use the natural number. Never force ideas into groups of three.
-- Repeat one word for a thing instead of cycling synonyms.
-- Replace false ranges ("from X to Y") with a plain list.
-
-Style
-- No em dashes and no en dashes. End the sentence or use a comma.
-- Use a colon only before a list or an example, never as a mid-sentence connector.
-- Do not bold every name or acronym. No decorative emoji. Straight quotes only.
-- Sentence case in headings, not title case.
-
-Filler
-- "in order to" becomes "to". "due to the fact that" becomes "because". Delete "it is important to note that".
-- Cut hedging to a single "may".
-- Replace generic conclusions with a specific fact or plan.
-- Prefer the plain word: use, not utilise or leverage; help, not facilitate; many, not numerous; if, not in the event that.
-- Prefer the active voice and name the actor.
-- Cut adverbs that prop up a weak verb, or use the stronger verb.
-
-Return the edited text only.`,
+  skill: UNSLOP_SKILL,
 };
 
 export const SKILL_PRESETS: SkillPreset[] = [DEFAULT_PRESET, UNSLOP_PRESET];
 
 export type HumanizerState = { skill: string | null; preset: string | null };
 
-/** The skill as it was left, or nothing on a first run — the pane then opens on a preset. */
+/** The skill as it was left, or nothing on a first run. The pane then opens on a preset. */
 export async function loadHumanizer(): Promise<HumanizerState> {
   if (!isDesktop()) return { skill: null, preset: null };
   return invoke<HumanizerState>("humanizer");
