@@ -302,6 +302,24 @@ answered and how many triples were refused. The flagged spans are underlined in 
 pane by a mirror behind the textarea, and the check runs paragraph by paragraph, so cards
 arrive while the rest of the document is still being read instead of after the last token.
 
+**Measured, then changed (0.2.9).** The view fires on the button and on ⌘↩ with no debounce,
+so none of the wait was frontend. The wait was one request: a document pasted as a single
+paragraph with no line breaks was never split, because the old splitter only looked for
+`\n`, so 4,800 characters went out as one call and the first card waited for all of it, and
+however many blocks there were they went out one after another. The planner now cuts a long
+run at a sentence end, gives the first block 500 characters and the rest 1,200, and keeps
+three blocks in the air. Timing the scheduler with a stub whose delay is proportional to
+the prompt (0.25 ms per character, a slow free model emitting JSON) a 4,800-character wall
+of prose reaches its first card in 369 ms against the 1.46 s one whole-document request
+would take, and a six-block document finishes in 216 ms with three in the air against
+545 ms one after another. What that measures is scheduling, not a provider: no key is
+configured on this machine, so no live model has been timed, and the stub's per-character
+rate is an assumption rather than a reading. `a_paragraph_with_no_line_breaks_is_still_cut_into_blocks`,
+`the_first_card_costs_one_short_block_not_the_whole_document`,
+`blocks_after_the_first_are_in_the_air_together` and
+`issues_from_overlapping_blocks_arrive_in_document_order` pin the behaviour and print
+those numbers.
+
 **Done when:** a paragraph with planted spelling, punctuation and agreement errors yields
 issues whose quotes are found in the text, and accepting all of them produces clean prose.
 

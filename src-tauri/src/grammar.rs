@@ -17,6 +17,11 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use std::future::Future;
+use std::pin::Pin;
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
+
 use crate::{openrouter, prompt, providers, samples};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -53,6 +58,16 @@ pub const PROGRESS_EVENT: &str = "grammar:progress";
 /// A block big enough to hold a paragraph or three, small enough that a free model
 /// answers it in a couple of seconds.
 const BLOCK_CHARS: usize = 1200;
+
+/// The first block is deliberately smaller than the rest. Nobody sees anything until the
+/// first block comes back, so a 500-character opener puts a card on screen in the time a
+/// 1,200-character one takes to type out its JSON, and the rest is read while that card
+/// is already there.
+const FIRST_BLOCK_CHARS: usize = 500;
+
+/// How many blocks may be in the air at once. Three keeps a check responsive without
+/// stampeding a free tier's per-minute limit.
+const IN_FLIGHT: usize = 3;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,39 +151,123 @@ async fn run(
     attempts: &[providers::Attempt],
     text: &str,
 ) -> Result<GrammarResult, String> {
+    let network = Network { app, attempts };
+    run_with(text, &network, |progress| {
+        if let Some(handle) = app {
+            let _ = handle.emit(PROGRESS_EVENT, progress);
+        }
+    })
+    .await
+}
+
+/// Answers one block of text. The app's implementation is [`openrouter::complete`]; the
+/// tests substitute a stub that sleeps, so the scheduler can be timed with no network, no
+/// key and no model.
+trait Answerer: Sync {
+    fn answer<'a>(
+        &'a self,
+        system: String,
+        user: String,
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), String>> + Send + 'a>>;
+}
+
+struct Network<'a> {
+    app: Option<&'a AppHandle>,
+    attempts: &'a [providers::Attempt],
+}
+
+impl Answerer for Network<'_> {
+    fn answer<'a>(
+        &'a self,
+        system: String,
+        user: String,
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), String>> + Send + 'a>> {
+        Box::pin(async move {
+            openrouter::complete(self.app, samples::GRAMMAR, self.attempts, &system, &user).await
+        })
+    }
+}
+
+/// The scheduling half of a check, with the model call supplied from outside.
+///
+/// Two things are measurable here and both used to be wrong. The first block is small, so
+/// the first `on_progress` call is one short answer away instead of the whole document's.
+/// The remaining blocks go into the air together, so a five-block document costs two
+/// rounds of latency rather than five. Progress always carries every issue found so far,
+/// in document order, however the blocks happened to finish.
+async fn run_with<P>(
+    text: &str,
+    answerer: &dyn Answerer,
+    mut on_progress: P,
+) -> Result<GrammarResult, String>
+where
+    P: FnMut(Progress),
+{
     let text = text.trim();
     if text.is_empty() {
         return Err("There is nothing to check.".to_string());
     }
 
-    // Paragraph blocks rather than the whole document. A model answers a block in a
-    // fraction of the time it needs to emit one JSON array for an essay, and each block
-    // that lands is emitted, so the first suggestions show up almost immediately.
     let planned = blocks(text);
     let total = planned.len();
+    let mut answers: Vec<Option<Result<(String, String), String>>> =
+        (0..total).map(|_| None).collect();
+    let mut in_flight = FuturesUnordered::new();
+    let mut next = 0usize;
+    let mut done = 0usize;
     let mut all: Vec<Issue> = Vec::new();
     let mut dropped = 0usize;
-    let mut model = String::new();
     let mut unreadable = 0usize;
-    let mut last_parse_error = String::new();
+    let mut model = String::new();
+    let mut last_error = String::new();
 
-    for (index, (offset, block)) in planned.iter().enumerate() {
-        let (system, user) = prompt::grammar_prompt(block);
-        let (used, raw) =
-            openrouter::complete(app, samples::GRAMMAR, attempts, &system, &user).await?;
-        model = used;
+    while next < total || !in_flight.is_empty() {
+        while next < total && in_flight.len() < IN_FLIGHT {
+            let index = next;
+            let block = planned[index].1.clone();
+            let (system, user) = prompt::grammar_prompt(&block);
+            let answer = answerer.answer(system, user);
+            in_flight.push(async move { (index, answer.await) });
+            next += 1;
+        }
 
-        match parse_issues(&raw) {
-            Ok(parsed) => {
-                let (found, lost, _) = verify(block, parsed);
-                let base = utf16_len(&text[..*offset]);
-                all.extend(found.into_iter().map(|issue| issue.shifted(base)));
-                dropped += lost;
-            }
-            Err(err) => {
-                // One block answered in prose must not throw away the blocks that worked.
-                unreadable += 1;
-                last_parse_error = err;
+        let Some((index, outcome)) = in_flight.next().await else {
+            break;
+        };
+        answers[index] = Some(outcome);
+        done += 1;
+
+        // Rebuilt from every answered block rather than appended to, because blocks no
+        // longer finish in document order: a later block can land first, and its issues
+        // still have to be merged where they belong in the text.
+        all.clear();
+        dropped = 0;
+        unreadable = 0;
+        for (position, slot) in answers.iter().enumerate() {
+            let Some(outcome) = slot else { continue };
+            let (offset, block) = &planned[position];
+            match outcome {
+                Ok((used, raw)) => {
+                    model = used.clone();
+                    match parse_issues(raw) {
+                        Ok(parsed) => {
+                            let (found, lost, _) = verify(block, parsed);
+                            let base = utf16_len(&text[..*offset]);
+                            all.extend(found.into_iter().map(|issue| issue.shifted(base)));
+                            dropped += lost;
+                        }
+                        Err(err) => {
+                            // One block answered in prose must not throw away the blocks
+                            // that worked.
+                            unreadable += 1;
+                            last_error = err.clone();
+                        }
+                    }
+                }
+                Err(err) => {
+                    unreadable += 1;
+                    last_error = err.clone();
+                }
             }
         }
 
@@ -179,22 +278,18 @@ async fn run(
         }
         all.sort_by_key(|issue| if issue.unique { issue.start } else { usize::MAX });
 
-        if let Some(handle) = app {
-            let _ = handle.emit(
-                PROGRESS_EVENT,
-                Progress {
-                    done: index + 1,
-                    total,
-                    issues: all.clone(),
-                    model: model.clone(),
-                },
-            );
-        }
+        on_progress(Progress {
+            done,
+            total,
+            issues: all.clone(),
+            model: model.clone(),
+        });
     }
 
-    // Nothing parsed at all is a failed check, not a clean document.
+    // Nothing parsed at all is a failed check, not a clean document. When every block
+    // failed at the transport rather than the parser, that error is the useful one.
     if all.is_empty() && unreadable == total {
-        return Err(last_parse_error);
+        return Err(last_error);
     }
 
     let unlocated = all.iter().filter(|issue| !issue.unique).count();
@@ -209,48 +304,30 @@ async fn run(
 /// Paragraph blocks with the byte offset each one starts at.
 ///
 /// A blank line is where a document can be checked on its own: a quoted mistake never
-/// spans one, so a block's issues belong to that block. Long paragraphs are cut at the
-/// last line break that fits, because a free model given two thousand words of raw prose
-/// answers far more slowly than one given a few hundred.
+/// spans one, so a block's issues belong to that block. A paragraph longer than a block is
+/// cut at a sentence end, which is the change that matters for a document pasted as one
+/// wall of prose: the old splitter only looked for line breaks, so that document went to
+/// the model as a single request and the first card waited for all of it.
 fn blocks(text: &str) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut start = 0usize;
-    let mut last_break: Option<usize> = None;
     let mut index = 0usize;
 
     while index < bytes.len() {
-        let blank_line = index + 1 < bytes.len() && bytes[index] == b'\n' && bytes[index + 1] == b'\n';
-        if blank_line {
-            if index > start {
-                out.push((start, text[start..index].to_string()));
-            }
+        if bytes[index] == b'\n' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+            push_paragraph(text, start, index, &mut out);
             let mut next = index;
             while next < bytes.len() && bytes[next] == b'\n' {
                 next += 1;
             }
             start = next;
-            last_break = None;
             index = next;
             continue;
         }
-
-        if bytes[index] == b'\n' {
-            last_break = Some(index);
-        }
-        if index.saturating_sub(start) >= BLOCK_CHARS {
-            if let Some(end) = last_break.filter(|end| *end > start) {
-                out.push((start, text[start..end].to_string()));
-                start = end + 1;
-                last_break = None;
-            }
-        }
         index += 1;
     }
-
-    if start < bytes.len() {
-        out.push((start, text[start..].to_string()));
-    }
+    push_paragraph(text, start, bytes.len(), &mut out);
 
     // Whitespace-only blocks are not worth a request.
     out.retain(|(_, block)| !block.trim().is_empty());
@@ -258,6 +335,54 @@ fn blocks(text: &str) -> Vec<(usize, String)> {
         out.push((0, text.to_string()));
     }
     out
+}
+
+/// Cuts one paragraph into blocks. The first is [`FIRST_BLOCK_CHARS`] because the first
+/// card is what the person is waiting for; the rest are [`BLOCK_CHARS`]. A cut prefers the
+/// last sentence end that fits, then a line break, then a space: a model checks whole
+/// sentences better than fragments of them.
+fn push_paragraph(text: &str, start: usize, end: usize, out: &mut Vec<(usize, String)>) {
+    let mut cursor = start;
+    while cursor < end {
+        let limit = if out.is_empty() { FIRST_BLOCK_CHARS } else { BLOCK_CHARS };
+        if end - cursor <= limit {
+            out.push((cursor, text[cursor..end].to_string()));
+            return;
+        }
+        let boundary = cut_point(text, cursor, end, limit);
+        out.push((cursor, text[cursor..boundary].to_string()));
+        cursor = boundary;
+        // The space or line break we split on belongs to neither block.
+        while cursor < end && matches!(text.as_bytes()[cursor], b' ' | b'\n') {
+            cursor += 1;
+        }
+    }
+}
+
+/// Where to cut a run longer than `limit`, in bytes. Every boundary this returns is a char
+/// boundary, so slicing at it is safe whatever the text contains.
+fn cut_point(text: &str, cursor: usize, end: usize, limit: usize) -> usize {
+    let mut window_end = (cursor + limit).min(end);
+    while window_end > cursor && !text.is_char_boundary(window_end) {
+        window_end -= 1;
+    }
+    let window = &text[cursor..window_end];
+
+    // A sentence end, but not so early that the block becomes a fragment.
+    if let Some(index) = window.rfind(['.', '!', '?']) {
+        if index + 1 >= limit / 3 {
+            return cursor + index + 1;
+        }
+    }
+    if let Some(index) = window.rfind('\n') {
+        return cursor + index;
+    }
+    if let Some(index) = window.rfind(' ') {
+        return cursor + index;
+    }
+    // No punctuation, no break and no space: a hard cut still beats one request for the
+    // whole document.
+    window_end
 }
 
 /// Pulls the JSON out of whatever wrapper the reply came in, and survives a reply
@@ -428,6 +553,9 @@ pub fn slice_utf16(text: &str, start: usize, end: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::time::{Duration, Instant};
 
     fn raw(quote: &str, suggestion: &str, category: &str) -> RawIssue {
         RawIssue {
@@ -594,5 +722,178 @@ mod tests {
         let (issues, _, _) = verify(text, vec![raw(", uh,", "", "style")]);
         assert_eq!(issues[0].suggestion, "");
         assert_eq!(slice_utf16(text, issues[0].start, issues[0].end), Some(", uh,".to_string()));
+    }
+
+    /// A model with a known price per character and no network. The delay is proportional
+    /// to the prompt, which is what makes the block plan measurable: a request carrying the
+    /// whole document takes as long as the document is, and a request carrying 500
+    /// characters takes a fifth of that.
+    struct Stub {
+        per_char_ms: f64,
+    }
+
+    impl Stub {
+        fn new(per_char_ms: f64) -> Self {
+            Self { per_char_ms }
+        }
+
+        fn delay(&self, chars: usize) -> Duration {
+            Duration::from_millis((chars as f64 * self.per_char_ms) as u64)
+        }
+    }
+
+    impl Answerer for Stub {
+        fn answer<'a>(
+            &'a self,
+            _system: String,
+            user: String,
+        ) -> Pin<Box<dyn Future<Output = Result<(String, String), String>> + Send + 'a>> {
+            let delay = self.delay(user.len());
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                Ok(("stub".to_string(), "{\"issues\":[]}".to_string()))
+            })
+        }
+    }
+
+    #[test]
+    fn a_paragraph_with_no_line_breaks_is_still_cut_into_blocks() {
+        // The old splitter only looked for newlines, so this document went out as one
+        // request and the first card waited for every word of it.
+        let text = "the writer did a thing that reads badly. ".repeat(120);
+        assert!(text.len() > 4_800);
+        assert!(!text.contains('\n'));
+
+        let planned = blocks(&text);
+        assert!(planned.len() >= 4, "blocks: {}", planned.len());
+        for (offset, block) in &planned {
+            assert_eq!(&text[*offset..*offset + block.len()], block, "the offset is real");
+            assert!(block.chars().count() <= BLOCK_CHARS + 8, "no oversized block");
+        }
+        assert!(
+            planned[0].1.chars().count() <= FIRST_BLOCK_CHARS + 8,
+            "the first block is the short one: {}",
+            planned[0].1.chars().count()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_card_costs_one_short_block_not_the_whole_document() {
+        let text = "the writer did a thing that reads badly. ".repeat(120);
+        let planned = blocks(&text);
+
+        // 0.25 ms per character is a slow free model emitting JSON: 250 ms per 1,000
+        // characters. The model time is simulated; the scheduling it measures is the real
+        // code path.
+        let stub = Stub::new(0.25);
+        let whole_document = stub.delay(prompt::grammar_prompt(&text).1.len());
+
+        let started = Instant::now();
+        let mut first: Option<(Duration, usize)> = None;
+        let result = run_with(&text, &stub, |progress| {
+            if first.is_none() {
+                first = Some((started.elapsed(), progress.done));
+            }
+        })
+        .await
+        .expect("the stub always answers");
+        let (elapsed, done) = first.expect("one progress event per answered block");
+
+        eprintln!(
+            "first card: {:?} after {} of {} blocks; one whole-document request would have taken {:?}",
+            elapsed,
+            done,
+            planned.len(),
+            whole_document
+        );
+
+        assert_eq!(done, 1, "the first event is the first block, not the document");
+        assert!(
+            elapsed < whole_document / 2,
+            "first card {elapsed:?} against {whole_document:?} for one whole-document request"
+        );
+        assert!(result.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocks_after_the_first_are_in_the_air_together() {
+        let text = "a clause long enough to be split. ".repeat(160);
+        let planned = blocks(&text);
+        assert!(planned.len() >= 5, "blocks: {}", planned.len());
+
+        let stub = Stub::new(0.05);
+        let started = Instant::now();
+        let mut last = 0usize;
+        run_with(&text, &stub, |progress| last = progress.done)
+            .await
+            .expect("the stub always answers");
+        let elapsed = started.elapsed();
+        let sequential: Duration = planned
+            .iter()
+            .map(|(_, block)| stub.delay(prompt::grammar_prompt(block).1.len()))
+            .sum();
+
+        eprintln!(
+            "{} blocks: {:?} with three in the air, {:?} one after another",
+            planned.len(),
+            elapsed,
+            sequential
+        );
+
+        assert_eq!(last, planned.len(), "every block reported");
+        assert!(
+            elapsed * 3 < sequential * 2,
+            "overlap: {elapsed:?} against {sequential:?} one at a time"
+        );
+    }
+
+    /// Answers every block with the same quote, but the later blocks answer first. The
+    /// merged list still has to read in document order.
+    struct Echo;
+
+    impl Answerer for Echo {
+        fn answer<'a>(
+            &'a self,
+            _system: String,
+            user: String,
+        ) -> Pin<Box<dyn Future<Output = Result<(String, String), String>> + Send + 'a>> {
+            let delay = if user.contains("first") {
+                60
+            } else if user.contains("second") {
+                30
+            } else {
+                0
+            };
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                Ok((
+                    "echo".to_string(),
+                    "{\"issues\":[{\"original\":\"teh\",\"replacement\":\"the\",\"message\":\"typo\",\"category\":\"spelling\"}]}"
+                        .to_string(),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn issues_from_overlapping_blocks_arrive_in_document_order() {
+        let text = "teh first thing is here.\n\nteh second thing is here.\n\nteh third thing is here.";
+        let result = run_with(text, &Echo, |_| {})
+            .await
+            .expect("the stub always answers");
+
+        assert_eq!(result.issues.len(), 3);
+        let starts: Vec<usize> = result.issues.iter().map(|issue| issue.start).collect();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "document order: {starts:?}"
+        );
+        for issue in &result.issues {
+            assert_eq!(
+                slice_utf16(text, issue.start, issue.end),
+                Some("teh".to_string()),
+                "every span still points at its quote"
+            );
+        }
     }
 }

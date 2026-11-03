@@ -33,6 +33,17 @@ const FILE: &str = "samples.jsonl";
 /// Four hundred calls is weeks of ordinary use in a file small enough to read.
 const CAP: usize = 400;
 
+/// Recording is a read, insert and rewrite of one file, and a grammar check now answers
+/// up to three blocks at once. Without this, two writers could each read the old log and
+/// drop the other's line. One lock for the process is enough: nothing here is hot.
+static RECORD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn locked() -> std::sync::MutexGuard<'static, ()> {
+    RECORD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The two jobs are measured separately: a model that writes good prose can still
 /// refuse to emit JSON, and a grammar check is nothing but JSON.
 pub const PARAPHRASE: &str = "paraphrase";
@@ -193,6 +204,7 @@ pub fn record(app: &AppHandle, model: &str, task: &str, ok: bool, ms: u64, meta:
     if model.trim().is_empty() {
         return;
     }
+    let _guard = locked();
     let sample = Sample {
         at: now(),
         model: model.trim().to_string(),
@@ -243,6 +255,7 @@ pub fn apply_outcome(samples: &mut [Sample], model: &str, task: &str, outcome: &
 /// Records what the person did with the newest reply from this model on this task.
 /// Returns whether there was a sample to judge.
 pub fn set_outcome(app: &AppHandle, model: &str, task: &str, outcome: &str) -> bool {
+    let _guard = locked();
     let Ok(mut samples) = load(app) else {
         return false;
     };
