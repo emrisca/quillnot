@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app icon source. `npx tauri icon app-icon.svg` rasterises the whole
+       platform set from this file, so the corner radius, the gradient and the mark
+       are defined once here rather than in nineteen PNGs.
+
+       The tile is a 1024 square with a 230 radius — the same proportion macOS uses —
+       and the corners are genuinely transparent, which is what makes it sit in the
+       Dock as an app instead of as a screenshot of a green square. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#50a247"/>
+      <stop offset="0.55" stop-color="#3f8f38"/>
+      <stop offset="1" stop-color="#2b6527"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#gloss)"/>
+  <rect x="7" y="7" width="1010" height="1010" rx="224" ry="224" fill="none"
+        stroke="#ffffff" stroke-opacity="0.16" stroke-width="14"/>
+
+  <!-- The pen from src/icons.tsx, scaled to fill about 60% of the tile. -->
+  <g transform="translate(52.5 37.3) scale(38)" fill="none" stroke="#ffffff"
+     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20.2 4.4a5 5 0 0 0-7 0l-7 7v5.4h5.4l7-7a5 5 0 0 0 1.6-5.4zM4 20l6.5-6.5"/>
+  </g>
+</svg>
