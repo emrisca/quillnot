@@ -56,6 +56,10 @@ const DEMOTED_SHARE: f64 = 0.5;
 /// Auto will not act on a ranking older than this. A week-old table would keep
 /// sending runs to a model that has since gone dark.
 const CACHE_MAX_AGE: i64 = 7 * 24 * 3600;
+/// How many successful refreshes may pass without an id before its row is dropped. One
+/// is deliberate: the refresh that loses a model flags it so a pin or a fallback chain
+/// can explain itself, and the next refresh removes it.
+const MAX_MISSING: usize = 1;
 /// Penalties are capped so one bad afternoon cannot bury a model forever, and the
 /// whole table together cannot take more than this off a score out of 100.
 const FAILURE_CAP: f64 = 3.0;
@@ -157,11 +161,15 @@ pub struct PlatformRow {
     pub uptime_window: Option<String>,
     pub latency_ms: Option<f64>,
     pub throughput: Option<f64>,
-    /// False when the model was in an earlier table and is no longer upstream. The row
-    /// is kept rather than dropped, so a pin or a fallback chain holding the id can say
-    /// what happened to it.
+    /// False when the model was in the previous table and this refresh no longer lists
+    /// it. The row survives one generation so a pin or a fallback chain holding the id
+    /// can explain itself, then [`MAX_MISSING`] removes it.
     #[serde(default = "default_true")]
     pub available: bool,
+    /// Successful refreshes in a row that did not list this id. [`MAX_MISSING`] is the
+    /// whole allowance, so the table cannot fill with models nobody can call any more.
+    #[serde(default)]
+    pub missing: usize,
 }
 
 fn default_true() -> bool {
@@ -239,7 +247,13 @@ struct RankingCache {
     /// ask whether anything changed instead of downloading the JSON again.
     #[serde(default)]
     etag: Option<String>,
+    /// OpenRouter's half. This is the only half a refresh compares against the fetch.
     rows: Vec<PlatformRow>,
+    /// Each connected provider's own listing, replaced wholesale on every refresh.
+    /// Keeping it beside the platform half is what stops a provider model from being
+    /// mistaken for an OpenRouter model that vanished, then re-added on every launch.
+    #[serde(default)]
+    provider_rows: Vec<PlatformRow>,
 }
 
 /// Ids that are text-to-text by modality but are not chat models. A music generator
@@ -561,16 +575,22 @@ pub async fn fetch_platform_if_changed(etag: Option<&str>) -> Result<Fetch, Stri
     })
 }
 
-/// The fresh table with rows that vanished upstream kept and marked unavailable.
+/// The fresh table with rows that vanished upstream kept for one generation.
 ///
 /// Dropping them silently would lose the only local record that the model ever worked,
 /// and a pin or a fallback chain holding that id would break with no explanation. They
-/// stay, flagged, until the cache ages out.
+/// stay, flagged, for one generation: the next successful refresh drops them, so the
+/// table describes today's catalogue instead of every free model ever retired.
+///
+/// Only OpenRouter's own rows are compared here. A provider's listing lives in its own
+/// half of the cache and is rebuilt on every refresh, because no amount of waiting will
+/// make OpenRouter list a model that only Groq serves.
 pub fn merge(previous: &[PlatformRow], fresh: Vec<PlatformRow>) -> Vec<PlatformRow> {
     let mut merged: Vec<PlatformRow> = fresh
         .into_iter()
         .map(|mut row| {
             row.available = true;
+            row.missing = 0;
             row
         })
         .collect();
@@ -578,14 +598,34 @@ pub fn merge(previous: &[PlatformRow], fresh: Vec<PlatformRow>) -> Vec<PlatformR
     let present: std::collections::HashSet<String> =
         merged.iter().map(|row| row.id.clone()).collect();
     for old in previous {
-        if present.contains(&old.id) {
+        if present.contains(&old.id) || !is_platform_row(old) {
+            continue;
+        }
+        if old.missing >= MAX_MISSING {
             continue;
         }
         let mut gone = old.clone();
         gone.available = false;
+        gone.missing += 1;
         merged.push(gone);
     }
     merged
+}
+
+/// Whether a row came from OpenRouter's catalogue rather than a provider's own listing.
+///
+/// The provider field alone is not enough. Builds up to 0.2.9 wrote provider ids such as
+/// `google::gemini-2.5-flash` into the same list with the provider field still saying
+/// `openrouter`, and the next refresh then treated them as models OpenRouter had dropped.
+/// The id separator is unambiguous: [`providers::catalog_id`] adds it only for a provider
+/// that is not the gateway.
+fn is_platform_row(row: &PlatformRow) -> bool {
+    row.provider == providers::DEFAULT_PROVIDER && !row.id.contains("::")
+}
+
+/// Sorts a cache written by an older build into the two halves this version keeps.
+fn split_platform_half(rows: Vec<PlatformRow>) -> (Vec<PlatformRow>, Vec<PlatformRow>) {
+    rows.into_iter().partition(is_platform_row)
 }
 
 /// What a refresh does to the cache, without a network: a 304 keeps the cached rows, a
@@ -645,6 +685,7 @@ async fn platform_from_models(models: Vec<ModelRow>) -> Vec<PlatformRow> {
                 latency_ms,
                 throughput,
                 available: true,
+                missing: 0,
             }
         })
         .buffer_unordered(CONCURRENCY)
@@ -734,6 +775,7 @@ pub async fn provider_rows(
             latency_ms: None,
             throughput: None,
             available: true,
+            missing: 0,
         })
         .collect();
 
@@ -761,6 +803,7 @@ pub async fn provider_rows(
             latency_ms: None,
             throughput: None,
             available: true,
+            missing: 0,
         });
     }
 
@@ -771,17 +814,8 @@ pub async fn provider_rows(
 /// The OpenRouter table plus one row set per connected provider. That is the whole
 /// point of the merged tab: one ranking across every free tier the person has a key
 /// for, instead of a table of OpenRouter and a separate list of settings.
-async fn with_provider_rows(
-    settings: &store::Settings,
-    openrouter: Vec<PlatformRow>,
-) -> Vec<PlatformRow> {
-    let mut rows: Vec<PlatformRow> = openrouter
-        .into_iter()
-        .map(|mut row| {
-            row.provider = providers::DEFAULT_PROVIDER.to_string();
-            row
-        })
-        .collect();
+async fn live_provider_rows(settings: &store::Settings) -> Vec<PlatformRow> {
+    let mut rows: Vec<PlatformRow> = Vec::new();
 
     for provider in providers::PROVIDERS
         .iter()
@@ -914,7 +948,20 @@ fn cache_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 fn read_cache(app: &AppHandle) -> Option<RankingCache> {
     let path = cache_path(app).ok()?;
     let bytes = std::fs::read(path).ok()?;
-    let cache: RankingCache = serde_json::from_slice(&bytes).ok()?;
+    let mut cache: RankingCache = serde_json::from_slice(&bytes).ok()?;
+
+    // A file written before the halves were separate holds every provider's rows in the
+    // platform half, and each refresh marked them gone because OpenRouter cannot list
+    // them. Move them over instead of carrying generations of dead entries.
+    let (platform, legacy) = split_platform_half(cache.rows);
+    cache.rows = platform;
+    if cache.provider_rows.is_empty() {
+        let mut seen = std::collections::HashSet::new();
+        cache.provider_rows = legacy
+            .into_iter()
+            .filter(|row| seen.insert(row.id.clone()))
+            .collect();
+    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -926,7 +973,12 @@ fn read_cache(app: &AppHandle) -> Option<RankingCache> {
     Some(cache)
 }
 
-fn write_cache(app: &AppHandle, rows: &[PlatformRow], etag: Option<String>) {
+fn write_cache(
+    app: &AppHandle,
+    rows: &[PlatformRow],
+    provider_rows: &[PlatformRow],
+    etag: Option<String>,
+) {
     let written = (|| -> Result<(), String> {
         let path = cache_path(app)?;
         let now = std::time::SystemTime::now()
@@ -937,6 +989,7 @@ fn write_cache(app: &AppHandle, rows: &[PlatformRow], etag: Option<String>) {
             at: now,
             etag,
             rows: rows.to_vec(),
+            provider_rows: provider_rows.to_vec(),
         })
         .map_err(|e| e.to_string())?;
         std::fs::write(path, bytes).map_err(|e| e.to_string())
@@ -971,18 +1024,22 @@ pub async fn catalogue(app: &AppHandle, task: &str) -> Result<Catalogue, String>
     // Every connected provider's models join the same table and the same ranking, so
     // one list answers "what is best for this task" rather than "what does OpenRouter
     // have".
-    let platform = with_provider_rows(&settings, platform).await;
-    write_cache(app, &platform, etag);
+    let provider_rows = live_provider_rows(&settings).await;
+    write_cache(app, &platform, &provider_rows, etag);
 
+    let mut table = platform;
+    table.extend(provider_rows);
     let samples = samples::load(app).unwrap_or_default();
-    Ok(decorate(platform, &samples, &task, &settings))
+    Ok(decorate(table, &samples, &task, &settings))
 }
 
 /// The last ranking this app measured, with today's samples and the current settings
 /// folded in. None when there is no usable cache — Auto then leaves the choice to the
 /// provider's configured model.
 pub fn ranked_from_cache(app: &AppHandle, task: &str) -> Option<Catalogue> {
-    let platform = read_cache(app)?.rows;
+    let cache = read_cache(app)?;
+    let mut platform = cache.rows;
+    platform.extend(cache.provider_rows);
     let samples = samples::load(app).unwrap_or_default();
     let task = normalise_task(task);
     Some(decorate(
@@ -1050,6 +1107,7 @@ mod tests {
             latency_ms: None,
             throughput: None,
             available: true,
+            missing: 0,
         }
     }
 
@@ -1526,6 +1584,7 @@ mod tests {
             at: 1,
             etag: Some("\"v1\"".to_string()),
             rows: vec![platform("a/one", Some(1.0)), platform("b/two", Some(0.9))],
+            provider_rows: Vec::new(),
         };
 
         let (rows, etag) = apply_refresh(Some(cached), Fetch::Unchanged);
@@ -1544,6 +1603,7 @@ mod tests {
                 platform("gone/model", Some(1.0)),
                 platform("stay/model", Some(1.0)),
             ],
+            provider_rows: Vec::new(),
         };
         let fresh = vec![platform("stay/model", Some(0.9))];
 
@@ -1561,6 +1621,7 @@ mod tests {
             .find(|row| row.id == "gone/model")
             .expect("a vanished model is kept, not dropped");
         assert!(!gone.available);
+        assert_eq!(gone.missing, 1, "the refresh that lost it is counted");
         let stay = rows
             .iter()
             .find(|row| row.id == "stay/model")
@@ -1580,5 +1641,173 @@ mod tests {
             &store::Settings::default(),
         );
         assert!(!catalogue.rows[0].available);
+    }
+
+    #[test]
+    fn a_model_absent_from_a_second_refresh_is_dropped() {
+        let cached = RankingCache {
+            at: 1,
+            etag: None,
+            rows: vec![platform("gone/model", Some(1.0))],
+            provider_rows: Vec::new(),
+        };
+        let (first, _) = apply_refresh(
+            Some(cached),
+            Fetch::Fresh {
+                rows: vec![platform("stay/model", Some(1.0))],
+                etag: None,
+            },
+        );
+        assert_eq!(first.len(), 2, "the refresh that lost it keeps the row once");
+
+        let (second, _) = apply_refresh(
+            Some(RankingCache {
+                at: 2,
+                etag: None,
+                rows: first,
+                provider_rows: Vec::new(),
+            }),
+            Fetch::Fresh {
+                rows: vec![platform("stay/model", Some(1.0))],
+                etag: None,
+            },
+        );
+        assert!(
+            second.iter().all(|row| row.id != "gone/model"),
+            "one generation is the whole allowance: {}",
+            second.len()
+        );
+        assert_eq!(second.len(), 1);
+    }
+
+    #[test]
+    fn a_model_that_comes_back_is_available_again() {
+        let mut back = platform("back/model", Some(1.0));
+        back.available = false;
+        back.missing = MAX_MISSING;
+        let cached = RankingCache {
+            at: 1,
+            etag: None,
+            rows: vec![back],
+            provider_rows: Vec::new(),
+        };
+        let (rows, _) = apply_refresh(
+            Some(cached),
+            Fetch::Fresh {
+                rows: vec![platform("back/model", Some(0.9))],
+                etag: None,
+            },
+        );
+        assert_eq!(rows.len(), 1, "the id is back, so it is not a duplicate");
+        assert!(rows[0].available);
+        assert_eq!(rows[0].missing, 0, "the count resets when the id returns");
+        assert_eq!(rows[0].uptime, Some(0.9));
+    }
+
+    #[test]
+    fn a_provider_row_is_never_carried_as_a_gone_openrouter_model() {
+        // This is the bug that filled the file: every launch wrote the provider rows into
+        // the platform half, the next refresh saw ids OpenRouter never lists, flagged
+        // them, and added the live copies again, one generation per launch.
+        let mut legacy = platform("google::gemini-2.5-flash", None);
+        legacy.provider = providers::DEFAULT_PROVIDER.to_string();
+        let cached = RankingCache {
+            at: 1,
+            etag: None,
+            rows: vec![legacy, platform("stay/model", Some(1.0))],
+            provider_rows: vec![platform("google::gemini-2.5-flash", None)],
+        };
+        let (rows, _) = apply_refresh(
+            Some(cached),
+            Fetch::Fresh {
+                rows: vec![platform("stay/model", Some(0.9))],
+                etag: None,
+            },
+        );
+        assert_eq!(rows.len(), 1, "only the OpenRouter row survives the merge");
+        assert!(rows.iter().all(|row| row.available));
+        assert!(rows.iter().all(|row| !row.id.contains("::")));
+    }
+
+    #[test]
+    fn a_cache_from_an_older_build_is_split_into_two_halves() {
+        let mut google = platform("google::gemini-2.5-flash", None);
+        google.provider = providers::DEFAULT_PROVIDER.to_string();
+        let (half, provider) = split_platform_half(vec![platform("a/one", Some(1.0)), google]);
+        assert_eq!(half.len(), 1);
+        assert_eq!(half[0].id, "a/one");
+        assert_eq!(provider.len(), 1, "the provider id moves to the other half");
+        assert_eq!(provider[0].id, "google::gemini-2.5-flash");
+    }
+
+    /// The end to end check: a real cache file against today's real catalogue.
+    ///
+    /// `QUILLNOT_CACHE=<copy of catalog-ranking.json> cargo test --lib live_refresh --
+    /// --ignored --nocapture`. It writes `<cache>.after` beside the copy and never
+    /// touches the file the app owns.
+    #[tokio::test]
+    #[ignore = "talks to OpenRouter; needs QUILLNOT_CACHE pointing at a copy of the real cache"]
+    async fn a_live_refresh_keeps_nothing_absent_from_todays_catalogue() {
+        let path = std::env::var("QUILLNOT_CACHE").expect("QUILLNOT_CACHE");
+        let bytes = std::fs::read(&path).expect("the cache file");
+        let cache: RankingCache = serde_json::from_slice(&bytes).expect("the cache parses");
+        let before_rows = cache.rows.len() + cache.provider_rows.len();
+        let before_gone = cache.rows.iter().filter(|row| !row.available).count()
+            + cache.provider_rows.iter().filter(|row| !row.available).count();
+
+        let (rows, legacy) = split_platform_half(cache.rows);
+        let provider_rows = if cache.provider_rows.is_empty() {
+            legacy
+        } else {
+            cache.provider_rows
+        };
+        let cached = RankingCache {
+            at: cache.at,
+            etag: cache.etag,
+            rows,
+            provider_rows,
+        };
+
+        let fresh = fetch_platform().await.expect("OpenRouter answers");
+        let (rows, etag) = apply_refresh(
+            Some(cached),
+            Fetch::Fresh {
+                rows: fresh.clone(),
+                etag: None,
+            },
+        );
+        let present: std::collections::HashSet<String> =
+            fresh.iter().map(|row| row.id.clone()).collect();
+
+        let absent = rows
+            .iter()
+            .filter(|row| !present.contains(&row.id) && is_platform_row(row))
+            .count();
+        let beyond = rows
+            .iter()
+            .filter(|row| !present.contains(&row.id) && is_platform_row(row))
+            .filter(|row| row.available || row.missing > MAX_MISSING)
+            .count();
+        let after_gone = rows.iter().filter(|row| !row.available).count();
+        eprintln!(
+            "cache {} rows, {} gone -> {} rows, {} gone; today's fetch lists {}, absent after the merge: {}",
+            before_rows,
+            before_gone,
+            rows.len(),
+            after_gone,
+            present.len(),
+            absent
+        );
+        assert_eq!(beyond, 0, "nothing beyond one generation of history");
+        assert!(rows.len() < before_rows, "the table shrinks");
+
+        let written = serde_json::to_vec(&RankingCache {
+            at: 1,
+            etag,
+            rows,
+            provider_rows: Vec::new(),
+        })
+        .expect("serialises");
+        std::fs::write(format!("{path}.after"), written).expect("writes the after copy");
     }
 }

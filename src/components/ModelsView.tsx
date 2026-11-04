@@ -260,7 +260,7 @@ export function ModelsView() {
                     {row.available === false ? (
                       <span
                         className="mfail"
-                        title="This model was in an earlier catalogue and OpenRouter no longer lists it. Its measurements stay until the cache ages out."
+                        title="Not in the latest free-model list: OpenRouter has retired or renamed it, or it is no longer free or no longer a chat model. It stays for one more refresh so a pin can explain itself, then it is removed."
                       >
                         gone
                       </span>

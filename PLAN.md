@@ -142,10 +142,17 @@ and refreshed whenever the AI Models view opens.
 beside the last table, so an unchanged catalogue is a 304 and the per-model endpoint lookups
 are skipped entirely. The cache is read and conditionally refreshed at launch, on a
 background task, so AI Models is warm before anyone opens it. An id that vanished upstream is
-not dropped: the next table keeps the row with `available: false`, so a pin or a fallback
-chain holding it can say what happened to it, and the table marks it `gone`. The
-catalogue is also what makes the fallback chain in §1 mechanical — if the preferred model is
-down, the next one is a row in a table we already have.
+background task, so AI Models is warm before anyone opens it. An id that vanished upstream
+survives one successful refresh: the table keeps the row with `available: false` and marks it
+`gone`, so a pin or a fallback chain holding it can say what happened to it, and the refresh
+after that drops it. The bound is deliberate. An earlier version carried retired ids forever:
+the cache reached 455 rows, 396 of them dead, which was nine duplicated generations of the
+same 44 provider models, because provider listings were written into OpenRouter's half and
+then compared against a fetch that can never list them. Provider rows now live in their own
+half of the cache and are replaced on every refresh, so the file describes today's catalogue
+plus at most one generation of recently retired ids. The catalogue is also what makes the
+fallback chain in §1 mechanical: if the preferred model is down, the next one is a row in a
+table we already have.
 
 **Every call is a sample.** Each run records model, provider, task, first-token latency, total
 duration, tokens per second, HTTP status, and whether the result was kept, undone or rerun.
